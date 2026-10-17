@@ -1149,91 +1149,92 @@ export default function App() {
       />
 
       {/* TOP STUDIO HEADER BAR (Vrew Desktop Style) */}
-      <header className="h-14 px-4 bg-[#141822] border-b border-slate-800/90 flex items-center justify-between shrink-0 z-20">
+      <header className="h-14 px-4 bg-[#141722] border-b border-[#232838] flex items-center justify-between shrink-0 z-20 gap-3 overflow-x-auto whitespace-nowrap select-none">
         {/* Brand & Project Title */}
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2.5 bg-gradient-to-r from-cyan-500/15 to-indigo-500/15 border border-cyan-500/30 px-3 py-1.5 rounded-lg">
-            <div className="w-6 h-6 rounded-md bg-gradient-to-br from-cyan-400 to-indigo-500 flex items-center justify-center shadow-sm shadow-cyan-500/30">
-              <Scissors className="w-3.5 h-3.5 text-slate-950 stroke-[2.5]" />
+        <div className="flex items-center gap-2.5 shrink-0">
+          {/* Vrew Brand Logo */}
+          <div className="flex items-center gap-2 pr-1 shrink-0">
+            <div className="w-7 h-7 rounded-lg bg-[#00d287] flex items-center justify-center shadow-sm shadow-emerald-500/20">
+              <Scissors className="w-4 h-4 text-slate-950 stroke-[2.5]" />
             </div>
-            <div>
-              <div className="flex items-center gap-1.5">
-                <span className="font-bold tracking-tight text-sm text-white">
-                  Vrew
-                </span>
-                <span className="text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/30">
-                  Werv Local Pro
-                </span>
-              </div>
+            <div className="flex items-baseline gap-1.5">
+              <span className="font-extrabold tracking-tight text-base text-white font-sans">
+                Vrew
+              </span>
+              <span className="text-[10px] font-semibold tracking-wide px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+                Studio
+              </span>
             </div>
           </div>
+
+          <div className="h-4 w-px bg-slate-800 shrink-0" />
 
           {/* Open File & Demo Buttons */}
           <button
             onClick={() => fileInputRef.current?.click()}
             disabled={isUploading || isTranscribing}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800/90 hover:bg-slate-700/90 text-slate-200 text-xs font-medium border border-slate-700/80 transition"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1c2130] hover:bg-[#252c40] text-slate-200 text-xs font-medium border border-slate-700/80 transition shrink-0 whitespace-nowrap"
           >
-            <FolderOpen className="w-3.5 h-3.5 text-cyan-400" />
+            <FolderOpen className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
             <span>匯入影片</span>
           </button>
 
           <button
             onClick={handleLoadDemo}
             disabled={isLoadingDemo || isTranscribing}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800/50 hover:bg-slate-800 text-slate-300 text-xs border border-slate-700/60 transition"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#1c2130]/60 hover:bg-[#1c2130] text-slate-300 text-xs border border-slate-700/60 transition shrink-0 whitespace-nowrap"
             title="載入內建台灣繁中範例短片"
           >
-            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+            <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
             <span>載入範例</span>
           </button>
 
           {project && (
-            <div className="hidden xl:flex items-center gap-2 pl-2 border-l border-slate-800 text-xs text-slate-400">
-              <Film className="w-3.5 h-3.5 text-slate-500" />
-              <span className="text-slate-200 font-medium max-w-[180px] truncate">
+            <div className="hidden lg:flex items-center gap-2 px-2.5 py-1 rounded-md bg-[#0c0e14] border border-slate-800/90 text-xs text-slate-400 shrink-0 whitespace-nowrap">
+              <Film className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              <span className="text-slate-200 font-medium max-w-[200px] truncate" title={project.filename}>
                 {project.filename}
               </span>
-              <span className="text-slate-500">
-                ({project.width}×{project.height} · {project.fps}fps)
+              <span className="text-slate-500 font-mono text-[11px]">
+                {project.width}×{project.height} · {project.fps}fps
               </span>
             </div>
           )}
         </div>
 
-        {/* Center Editing Mode Switcher & Undo/Redo */}
-        <div className="flex items-center gap-2">
-          {/* Mode Toggle: Cut vs Edit Text */}
-          <div className="flex items-center bg-[#0c0e14] p-1 rounded-lg border border-slate-800">
+        {/* Center Editing Mode Switcher & Tools */}
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Mode Switcher: Segmented Control */}
+          <div className="flex items-center bg-[#0c0e14] p-0.5 rounded-lg border border-slate-800 shrink-0">
             <button
               onClick={() => {
                 setEditorMode('cut')
                 setEditingTokenId(null)
               }}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition ${
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs transition whitespace-nowrap ${
                 editorMode === 'cut'
-                  ? 'bg-cyan-500 text-slate-950 shadow-sm font-semibold'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-[#00d287] text-slate-950 font-bold shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 font-medium'
               }`}
             >
-              <Scissors className="w-3.5 h-3.5" />
-              <span>剪輯刪除模式</span>
+              <Scissors className="w-3.5 h-3.5 shrink-0" />
+              <span>剪輯模式</span>
             </button>
             <button
               onClick={() => setEditorMode('edit')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs font-medium transition ${
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs transition whitespace-nowrap ${
                 editorMode === 'edit'
-                  ? 'bg-indigo-500 text-white shadow-sm font-semibold'
-                  : 'text-slate-400 hover:text-slate-200'
+                  ? 'bg-indigo-500 text-white font-bold shadow-sm'
+                  : 'text-slate-400 hover:text-slate-200 font-medium'
               }`}
             >
-              <Edit3 className="w-3.5 h-3.5" />
-              <span>改錯字模式</span>
+              <Edit3 className="w-3.5 h-3.5 shrink-0" />
+              <span>改錯字</span>
             </button>
           </div>
 
           {/* Undo / Redo */}
-          <div className="flex items-center bg-[#0c0e14] p-1 rounded-lg border border-slate-800">
+          <div className="flex items-center bg-[#0c0e14] p-0.5 rounded-lg border border-slate-800 shrink-0">
             <button
               onClick={handleUndo}
               disabled={undoStack.length === 0}
@@ -1252,45 +1253,45 @@ export default function App() {
             </button>
           </div>
 
-          {/* ASR Settings Trigger */}
+          {/* ASR Settings Button */}
           <button
             onClick={() => setShowAsrSettings((v) => !v)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border transition shrink-0 whitespace-nowrap ${
               showAsrSettings
                 ? 'bg-indigo-500/20 border-indigo-400/50 text-indigo-200'
-                : 'bg-slate-800/70 hover:bg-slate-800 border-slate-700/70 text-slate-300'
+                : 'bg-[#1c2130] hover:bg-[#252c40] border-slate-700/80 text-slate-300'
             }`}
           >
-            <Settings2 className="w-3.5 h-3.5 text-indigo-400" />
-            <span>AI 辨識與參數設定</span>
+            <Settings2 className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+            <span>辨識設定</span>
           </button>
 
           {/* Shortcuts Guide */}
           <button
             onClick={() => setShowShortcutsModal(true)}
-            className="p-1.5 rounded-lg bg-slate-800/70 hover:bg-slate-800 border border-slate-700/70 text-slate-400 hover:text-slate-200 transition"
-            title="鍵盤快捷鍵說明"
+            className="p-1.5 rounded-lg bg-[#1c2130] hover:bg-[#252c40] border border-slate-700/80 text-slate-400 hover:text-slate-200 transition shrink-0"
+            title="鍵盤快捷鍵一覽"
           >
             <Keyboard className="w-4 h-4" />
           </button>
         </div>
 
         {/* Right Export Actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             onClick={handleInstantSrtDownload}
             disabled={segments.length === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700/80 text-slate-200 text-xs font-medium border border-slate-700 transition disabled:opacity-40"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1c2130] hover:bg-[#252c40] text-slate-200 text-xs font-medium border border-slate-700/80 transition disabled:opacity-40 shrink-0 whitespace-nowrap"
             title="立即匯出重算時間軸後的 UTF-8 .srt 字幕檔"
           >
-            <FileText className="w-3.5 h-3.5 text-emerald-400" />
-            <span>僅下載 SRT</span>
+            <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+            <span>匯出 SRT</span>
           </button>
 
           <button
             onClick={handleExport}
             disabled={!project || segments.length === 0 || isExporting}
-            className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-gradient-to-r from-cyan-500 to-indigo-500 hover:from-cyan-400 hover:to-indigo-400 text-slate-950 font-bold text-xs shadow-md shadow-cyan-500/20 transition disabled:opacity-50"
+            className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-[#00d287] hover:bg-[#00bf7a] text-[#062419] font-bold text-xs shadow-md shadow-emerald-500/20 transition disabled:opacity-50 shrink-0 whitespace-nowrap"
           >
             {isExporting ? (
               <>
@@ -1301,16 +1302,16 @@ export default function App() {
                     {
                       '--size': '14px',
                       '--thickness': '2px',
-                      '--spinner-color': '#0f172a',
+                      '--spinner-color': '#062419',
                     } as React.CSSProperties
                   }
                 />
-                <span>硬體加速匯出中...</span>
+                <span>匯出中...</span>
               </>
             ) : (
               <>
-                <Zap className="w-3.5 h-3.5 fill-current" />
-                <span>匯出影片 + SRT</span>
+                <Zap className="w-3.5 h-3.5 fill-current shrink-0" />
+                <span>匯出影片</span>
               </>
             )}
           </button>
@@ -1635,10 +1636,10 @@ export default function App() {
         {/* RIGHT PANE: VREW-STYLE SENTENCE ROWS + CHARACTER/SILENCE BLOCK EDITOR */}
         <div className="flex-1 flex flex-col min-w-0 bg-[#0c0e14]">
           {/* Right Pane Top Action Bar (Batch Silence & Selection Actions) */}
-          <div className="px-5 py-3 bg-[#121621] border-b border-slate-800/90 flex flex-wrap items-center justify-between gap-3 shrink-0">
+          <div className="px-5 py-2.5 bg-[#121621] border-b border-[#202534] flex flex-wrap items-center justify-between gap-3 shrink-0">
             {/* Batch Silence Controls */}
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-1.5 bg-[#0c0e14] px-2.5 py-1 rounded-lg border border-slate-800 text-xs">
+            <div className="flex items-center gap-2 shrink-0 flex-wrap">
+              <div className="flex items-center gap-1.5 bg-[#0c0e14] px-2.5 py-1 rounded-lg border border-slate-800 text-xs shrink-0 whitespace-nowrap">
                 <span className="text-amber-400 font-semibold">氣口門檻</span>
                 <input
                   type="number"
@@ -1656,57 +1657,57 @@ export default function App() {
 
               <button
                 onClick={() => handleSelectSilencesAbove(batchSilenceMin)}
-                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-medium transition"
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-medium transition shrink-0 whitespace-nowrap"
               >
                 <span>選取 &ge; {batchSilenceMin.toFixed(1)}s 氣口</span>
               </button>
 
               <button
                 onClick={() => handleDeleteSilencesAbove(batchSilenceMin)}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-sm transition"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs shadow-sm transition shrink-0 whitespace-nowrap"
               >
-                <Wand2 className="w-3.5 h-3.5" />
-                <span>一鍵刪除所有 &ge; {batchSilenceMin.toFixed(1)}s 氣口</span>
+                <Wand2 className="w-3.5 h-3.5 shrink-0" />
+                <span>一鍵剪除氣口 (&ge;{batchSilenceMin.toFixed(1)}s)</span>
               </button>
 
               {(stats.deletedWords > 0 || stats.deletedSilences > 0) && (
                 <button
                   onClick={handleRestoreAllTokens}
-                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition"
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs transition shrink-0 whitespace-nowrap"
                 >
-                  <RotateCcw className="w-3 h-3" />
+                  <RotateCcw className="w-3 h-3 shrink-0" />
                   <span>全部還原</span>
                 </button>
               )}
             </div>
 
             {/* Selection Contextual Actions */}
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 shrink-0">
               {selectedTokenIds.size > 0 ? (
                 <>
-                  <span className="text-xs text-cyan-300 font-medium">
+                  <span className="text-xs text-emerald-400 font-medium shrink-0 whitespace-nowrap">
                     已選取 {selectedTokenIds.size} 個積木
                   </span>
                   <button
                     onClick={toggleSelectedDeleted}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-xs font-medium transition"
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-xs font-medium transition shrink-0 whitespace-nowrap"
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
-                    <span>切換剪除/還原 (Space / Del)</span>
+                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                    <span>剪除/還原 (Space)</span>
                   </button>
                   {selectedTokenIds.size === 1 && (
                     <button
                       onClick={() => handleSplitSegmentAtToken()}
-                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs transition"
+                      className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs transition shrink-0 whitespace-nowrap"
                     >
-                      <CornerDownLeft className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>在此拆行 (Enter)</span>
+                      <CornerDownLeft className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span>拆行 (Enter)</span>
                     </button>
                   )}
                 </>
               ) : (
-                <span className="text-xs text-slate-400">
-                  💡 提示：點擊或拖曳選取字元/氣口，按 <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">Space</kbd> 或 <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">Delete</kbd> 剪片；雙擊單字可改錯字
+                <span className="text-xs text-slate-400 shrink-0 whitespace-nowrap hidden sm:inline">
+                  💡 提示：按 <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">Backspace</kbd> 往左連刪；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">Space</kbd> 試聽；雙擊單字改錯字
                 </span>
               )}
             </div>
