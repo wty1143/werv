@@ -17,7 +17,7 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 echo "▶ 啟動 FastAPI 後端服務 (http://127.0.0.1:8000)..."
-"$ROOT_DIR/.venv/bin/uvicorn" backend.main:app --host 127.0.0.1 --port 8000 &
+"$ROOT_DIR/.venv/bin/uvicorn" backend.main:app --host 127.0.0.1 --port 8000 --reload &
 BACKEND_PID=$!
 
 echo "▶ 啟動 React + Vite 前端介面 (http://localhost:5173)..."

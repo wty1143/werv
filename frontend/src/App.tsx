@@ -1269,10 +1269,11 @@ export default function App() {
           {/* Shortcuts Guide */}
           <button
             onClick={() => setShowShortcutsModal(true)}
-            className="p-1.5 rounded-lg bg-[#1c2130] hover:bg-[#252c40] border border-slate-700/80 text-slate-400 hover:text-slate-200 transition shrink-0"
-            title="鍵盤快捷鍵一覽"
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#1c2130] hover:bg-[#252c40] border border-slate-700/80 text-slate-300 hover:text-white transition shrink-0 text-xs"
+            title="查看完整鍵盤快捷鍵一覽"
           >
-            <Keyboard className="w-4 h-4" />
+            <Keyboard className="w-3.5 h-3.5 text-cyan-400" />
+            <span>快捷鍵說明</span>
           </button>
         </div>
 
@@ -1688,13 +1689,39 @@ export default function App() {
                   <span className="text-xs text-emerald-400 font-medium shrink-0 whitespace-nowrap">
                     已選取 {selectedTokenIds.size} 個積木
                   </span>
-                  <button
-                    onClick={toggleSelectedDeleted}
-                    className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 text-xs font-medium transition shrink-0 whitespace-nowrap"
-                  >
-                    <Trash2 className="w-3.5 h-3.5 shrink-0" />
-                    <span>剪除/還原 (Space)</span>
-                  </button>
+                  {(() => {
+                    const allSelectedDeleted = Array.from(selectedTokenIds).every((id) => {
+                      for (const s of segments) {
+                        for (const t of s.tokens) {
+                          if (t.id === id) return t.deleted
+                        }
+                      }
+                      return false
+                    })
+                    return (
+                      <button
+                        onClick={toggleSelectedDeleted}
+                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-medium transition shrink-0 whitespace-nowrap ${
+                          allSelectedDeleted
+                            ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border-emerald-500/40'
+                            : 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border-rose-500/40'
+                        }`}
+                        title={allSelectedDeleted ? '按 R 或點擊此處還原' : '按 Backspace 或點擊此處剪除'}
+                      >
+                        {allSelectedDeleted ? (
+                          <>
+                            <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                            <span>還原所選 (R)</span>
+                          </>
+                        ) : (
+                          <>
+                            <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                            <span>剪除所選 (Backspace)</span>
+                          </>
+                        )}
+                      </button>
+                    )
+                  })()}
                   {selectedTokenIds.size === 1 && (
                     <button
                       onClick={() => handleSplitSegmentAtToken()}
@@ -1707,7 +1734,7 @@ export default function App() {
                 </>
               ) : (
                 <span className="text-xs text-slate-400 shrink-0 whitespace-nowrap hidden sm:inline">
-                  💡 提示：按 <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">Backspace</kbd> 往左連刪；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">Space</kbd> 試聽；雙擊單字改錯字
+                  💡 提示：按 <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">Backspace</kbd> 剪除；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">R</kbd> 還原；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">⌘Z</kbd> 復原；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">Space</kbd> 試聽；雙擊改錯字
                 </span>
               )}
             </div>

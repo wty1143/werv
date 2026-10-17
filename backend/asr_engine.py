@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from opencc import OpenCC
@@ -483,6 +483,7 @@ def rebuild_silence_for_segments(
     segments: List[Segment],
     silence_threshold: float = 0.4,
     total_duration: Optional[float] = None,
+    vad_intervals: Optional[List[Dict[str, float]]] = None,
 ) -> List[Segment]:
     """Re-evaluate silence tokens when user adjusts the silence threshold slider in UI."""
     existing_deleted_map: Dict[Tuple[int, int], bool] = {}
@@ -512,6 +513,7 @@ def rebuild_silence_for_segments(
         silence_threshold=silence_threshold,
         total_duration=total_duration,
         existing_deleted_map=existing_deleted_map,
+        vad_intervals=vad_intervals,
     )
 
 
@@ -521,7 +523,8 @@ def transcribe_video_file(
     custom_prompt: str = "",
     silence_threshold: float = 0.4,
     total_duration: Optional[float] = None,
-) -> List[Segment]:
+    return_vad: bool = False,
+) -> Union[List[Segment], Tuple[List[Segment], List[Dict[str, float]]]]:
     """
     Full Module A pipeline:
     1. Extract 16kHz WAV
@@ -624,10 +627,13 @@ def transcribe_video_file(
             clause_rows.append(current_row)
 
     # Step 6: Insert silence tokens strictly bounded by VAD non-speech intervals
-    return insert_silence_tokens(
+    segments = insert_silence_tokens(
         clause_rows,
         silence_threshold=silence_threshold,
         total_duration=total_duration,
         vad_intervals=vad_intervals,
     )
+    if return_vad:
+        return segments, vad_intervals
+    return segments
 

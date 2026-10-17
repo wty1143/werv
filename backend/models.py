@@ -33,6 +33,7 @@ class ProjectMetadata(BaseModel):
     custom_prompt: str = ""
     silence_threshold: float = 0.4
     segments: List[Segment] = Field(default_factory=list)
+    vad_intervals: Optional[List[dict]] = None
 
 
 class TranscribeRequest(BaseModel):
@@ -49,6 +50,8 @@ class RebuildSilenceRequest(BaseModel):
     segments: List[Segment]
     silence_threshold: float = 0.4
     duration: Optional[float] = None
+    project_id: Optional[str] = None
+    vad_intervals: Optional[List[dict]] = None
 
 
 class ExportRequest(BaseModel):

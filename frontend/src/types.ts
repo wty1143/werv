@@ -35,6 +35,7 @@ export interface ProjectMetadata {
   custom_prompt: string
   silence_threshold: number
   segments: Segment[]
+  vad_intervals?: Array<{ start: number; end: number }>
 }
 
 export interface ExportResponse {

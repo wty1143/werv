@@ -110,28 +110,39 @@ def transcribe_project(req: TranscribeRequest) -> ProjectMetadata:
     project = _load_project(req.project_id)
     video_path = _find_video_file(req.project_id)
 
-    segments = transcribe_video_file(
+    segments, vad_intervals = transcribe_video_file(
         video_path=str(video_path),
         model_name=req.model_name,
         custom_prompt=req.custom_prompt,
         silence_threshold=req.silence_threshold,
         total_duration=project.duration,
+        return_vad=True,
     )
 
     project.model_name = req.model_name
     project.custom_prompt = req.custom_prompt
     project.silence_threshold = req.silence_threshold
     project.segments = segments
+    project.vad_intervals = vad_intervals
     _save_project(project)
     return project
 
 
 @app.post("/api/rebuild-silence")
 def rebuild_silence(req: RebuildSilenceRequest):
+    vad_intervals = req.vad_intervals
+    if not vad_intervals and req.project_id:
+        try:
+            proj = _load_project(req.project_id)
+            vad_intervals = proj.vad_intervals
+        except Exception:
+            pass
+
     updated = rebuild_silence_for_segments(
         segments=req.segments,
         silence_threshold=req.silence_threshold,
         total_duration=req.duration,
+        vad_intervals=vad_intervals,
     )
     return {"segments": updated}
 
@@ -235,12 +246,13 @@ def create_demo_project(
     )
 
     if transcribe:
-        project.segments = transcribe_video_file(
+        project.segments, project.vad_intervals = transcribe_video_file(
             video_path=str(dest_mp4),
             model_name=model_name,
             custom_prompt=project.custom_prompt,
             silence_threshold=0.4,
             total_duration=project.duration,
+            return_vad=True,
         )
 
     _save_project(project)
