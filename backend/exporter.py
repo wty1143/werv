@@ -24,25 +24,44 @@ def compute_keep_ranges(
     2. Pad each interval by `padding` (default 0.05s) on both ends.
     3. Merge overlapping intervals or adjacent intervals within `merge_gap` (default 0.08s).
     """
-    pre_padding = max(padding, 0.08)
-    post_padding = max(padding, 0.05)
+    pre_pad = max(padding, 0.08)
+    post_pad = max(padding, 0.05)
+
+    flat_tokens: List[Token] = [tok for seg in segments for tok in seg.tokens]
+    if not flat_tokens:
+        return []
+
+    # Group contiguous sequences of deleted == False tokens
+    # Cuts ONLY happen where a token is deleted; un-deleted sequences are kept continuously.
+    blocks: List[List[Token]] = []
+    current_block: List[Token] = []
+
+    for tok in flat_tokens:
+        if not tok.deleted:
+            current_block.append(tok)
+        else:
+            if current_block:
+                blocks.append(current_block)
+                current_block = []
+    if current_block:
+        blocks.append(current_block)
+
+    if not blocks:
+        return []
+
     raw_intervals: List[List[float]] = []
-    for seg in segments:
-        for tok in seg.tokens:
-            if not tok.deleted:
-                s = max(0.0, tok.start - pre_padding)
-                e = tok.end + post_padding
-                if total_duration is not None and total_duration > 0:
-                    e = min(total_duration, e)
-                if e > s:
-                    raw_intervals.append([s, e])
+    for b in blocks:
+        s = max(0.0, b[0].start - pre_pad)
+        e = b[-1].end + post_pad
+        if total_duration is not None and total_duration > 0:
+            e = min(total_duration, e)
+        if e > s:
+            raw_intervals.append([s, e])
 
     if not raw_intervals:
         return []
 
-    raw_intervals.sort(key=lambda x: (x[0], x[1]))
     merged: List[List[float]] = [raw_intervals[0]]
-
     for curr_s, curr_e in raw_intervals[1:]:
         prev_s, prev_e = merged[-1]
         if curr_s - prev_e <= merge_gap + 1e-6:

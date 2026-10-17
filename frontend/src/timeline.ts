@@ -16,28 +16,52 @@ export function computeKeepRanges(
 ): KeepRange[] {
   const prePadding = Math.max(padding, 0.08)
   const postPadding = Math.max(padding, 0.05)
-  const raw: [number, number][] = []
 
+  const flatTokens: Token[] = []
   for (const seg of segments) {
     for (const tok of seg.tokens) {
-      if (!tok.deleted) {
-        const s = Math.max(0, tok.start - prePadding)
-        let e = tok.end + postPadding
-        if (totalDuration && totalDuration > 0) {
-          e = Math.min(totalDuration, e)
-        }
-        if (e > s) {
-          raw.push([s, e])
-        }
+      flatTokens.push(tok)
+    }
+  }
+
+  if (flatTokens.length === 0) return []
+
+  // Group contiguous sequences of deleted === false tokens.
+  // Cuts ONLY happen where a token was explicitly deleted; non-deleted words play continuously.
+  const blocks: Token[][] = []
+  let currentBlock: Token[] = []
+
+  for (const tok of flatTokens) {
+    if (!tok.deleted) {
+      currentBlock.push(tok)
+    } else {
+      if (currentBlock.length > 0) {
+        blocks.push(currentBlock)
+        currentBlock = []
       }
+    }
+  }
+  if (currentBlock.length > 0) {
+    blocks.push(currentBlock)
+  }
+
+  if (blocks.length === 0) return []
+
+  const raw: [number, number][] = []
+  for (const b of blocks) {
+    const s = Math.max(0, b[0].start - prePadding)
+    let e = b[b.length - 1].end + postPadding
+    if (totalDuration && totalDuration > 0) {
+      e = Math.min(totalDuration, e)
+    }
+    if (e > s) {
+      raw.push([s, e])
     }
   }
 
   if (raw.length === 0) return []
 
-  raw.sort((a, b) => a[0] - b[0] || a[1] - b[1])
   const merged: [number, number][] = [raw[0]]
-
   for (let i = 1; i < raw.length; i++) {
     const [currS, currE] = raw[i]
     const prev = merged[merged.length - 1]
