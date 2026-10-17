@@ -541,14 +541,67 @@ export default function App() {
     }
   }
 
+  // Restore all tokens (both deleted tokens and shortened silences back to full duration)
   const handleRestoreAllTokens = () => {
     const nextSegments = segments.map((seg) => ({
       ...seg,
-      tokens: seg.tokens.map((tok) => ({ ...tok, deleted: false })),
+      tokens: seg.tokens.map((tok) => {
+        if (tok.type === 'silence') {
+          const gap = tok.end - tok.start
+          return {
+            ...tok,
+            deleted: false,
+            keep_duration: null,
+            text: `[··· ${gap.toFixed(1)}s]`,
+          }
+        }
+        return { ...tok, deleted: false }
+      }),
     }))
     commitSegments(nextSegments)
-    setStatusMessage('已還原所有被剪除的字元與氣口')
+    setStatusMessage('已還原所有被剪除的字元與氣口（包含恢復縮短之氣口為原始長度）')
   }
+
+  // Restore selected or cursor token(s), including clearing shortened silence back to full duration
+  const handleRestoreSelectedTokens = useCallback(() => {
+    let targetIds = Array.from(selectedTokenIds)
+    if (targetIds.length === 0 && cursorTokenId) {
+      targetIds = [cursorTokenId]
+    }
+    if (targetIds.length === 0) return
+
+    const idSet = new Set(targetIds)
+    let restoredShortenCount = 0
+    let restoredDeletedCount = 0
+
+    const nextSegments = segments.map((seg) => ({
+      ...seg,
+      tokens: seg.tokens.map((tok) => {
+        if (idSet.has(tok.id)) {
+          if (tok.deleted) restoredDeletedCount++
+          if (tok.type === 'silence') {
+            const gap = tok.end - tok.start
+            if (tok.keep_duration != null) restoredShortenCount++
+            return {
+              ...tok,
+              deleted: false,
+              keep_duration: null,
+              text: `[··· ${gap.toFixed(1)}s]`,
+            }
+          }
+          return { ...tok, deleted: false }
+        }
+        return tok
+      }),
+    }))
+
+    commitSegments(nextSegments)
+    if (restoredShortenCount > 0 && restoredDeletedCount === 0) {
+      setStatusMessage(`已將選取的氣口恢復為完整原始長度`)
+    } else {
+      setStatusMessage(`已還原 ${targetIds.length} 個字元/氣口 (R)`)
+    }
+  }, [selectedTokenIds, cursorTokenId, segments, commitSegments])
 
   // Inline Text Edit (改錯字：僅修改 Token 的 text 屬性，不改變其 start/end 與 deleted 狀態)
   const startEditingToken = (tok: Token) => {
@@ -1416,24 +1469,10 @@ export default function App() {
         }
       }
 
-      // R key: Restore deleted token(s)
+      // R key: Restore deleted token(s) or restore shortened silences back to original duration
       if (e.key.toLowerCase() === 'r' && !e.metaKey && !e.ctrlKey) {
         e.preventDefault()
-        let targetIds = Array.from(selectedTokenIds)
-        if (targetIds.length === 0 && cursorTokenId) {
-          targetIds = [cursorTokenId]
-        }
-        if (targetIds.length > 0) {
-          const idSet = new Set(targetIds)
-          const nextSegments = segments.map((seg) => ({
-            ...seg,
-            tokens: seg.tokens.map((tok) =>
-              idSet.has(tok.id) ? { ...tok, deleted: false } : tok
-            ),
-          }))
-          commitSegments(nextSegments)
-          setStatusMessage(`已還原 ${targetIds.length} 個字元/氣口 (R)`)
-        }
+        handleRestoreSelectedTokens()
         return
       }
 
@@ -1501,6 +1540,7 @@ export default function App() {
     showShortenModal,
     showFillerModal,
     handleOpenPhraseModal,
+    handleRestoreSelectedTokens,
   ])
 
   // Currently active segment & token for video subtitle overlay
@@ -2224,7 +2264,19 @@ export default function App() {
                     const hasSelectedSilence = Array.from(selectedTokenIds).some((id) => {
                       for (const s of segments) {
                         for (const t of s.tokens) {
-                          if (t.id === id) return t.type === 'silence'
+                          if (t.id === id && t.type === 'silence') {
+                            return true
+                          }
+                        }
+                      }
+                      return false
+                    })
+                    const hasSelectedShortenedSilence = Array.from(selectedTokenIds).some((id) => {
+                      for (const s of segments) {
+                        for (const t of s.tokens) {
+                          if (t.id === id && t.type === 'silence' && t.keep_duration != null) {
+                            return true
+                          }
                         }
                       }
                       return false
@@ -2262,6 +2314,18 @@ export default function App() {
                           >
                             <Edit3 className="w-3 h-3 shrink-0" />
                             <span>改詞 (E)</span>
+                          </button>
+                        )}
+
+                        {/* Restore shortened silence back to full duration */}
+                        {hasSelectedShortenedSilence && (
+                          <button
+                            onClick={handleRestoreSelectedTokens}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 text-xs font-medium transition shrink-0 whitespace-nowrap shadow-sm"
+                            title="將選取的縮短氣口恢復為完整原始長度 (快捷鍵 R)"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                            <span>恢復原長度 (R)</span>
                           </button>
                         )}
 
