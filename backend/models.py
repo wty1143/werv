@@ -15,6 +15,7 @@ class Token(BaseModel):
 class Segment(BaseModel):
     id: str
     tokens: List[Token]
+    caption: Optional[str] = None
 
 
 class KeepRange(BaseModel):

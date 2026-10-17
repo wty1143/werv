@@ -13,6 +13,7 @@ export interface Token {
 export interface Segment {
   id: string
   tokens: Token[]
+  caption?: string | null
 }
 
 export interface KeepRange {

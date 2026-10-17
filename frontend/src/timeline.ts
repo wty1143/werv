@@ -186,6 +186,13 @@ export function joinSegmentWords(tokens: Token[], includeDeleted = false): strin
   return parts.join('')
 }
 
+export function getEffectiveCaption(seg: Segment): string {
+  if (seg.caption !== undefined && seg.caption !== null) {
+    return seg.caption
+  }
+  return joinSegmentWords(seg.tokens, false)
+}
+
 export function generateRemappedSrtClient(segments: Segment[], keepRanges: KeepRange[]): string {
   if (keepRanges.length === 0) return ''
   const blocks: string[] = []
@@ -197,7 +204,9 @@ export function generateRemappedSrtClient(segments: Segment[], keepRanges: KeepR
     )
     if (keptWords.length === 0) continue
 
-    const text = joinSegmentWords(keptWords)
+    const text = seg.caption !== undefined && seg.caption !== null
+      ? seg.caption.trim()
+      : joinSegmentWords(keptWords)
     if (!text) continue
 
     const origStart = keptWords[0].start
@@ -232,7 +241,7 @@ export function rebuildSilenceTokensClient(
 ): Segment[] {
   const deletedSilenceMap = new Map<string, boolean>()
   const keepDurationMap = new Map<string, number | null>()
-  const wordRows: { segId: string; words: Token[] }[] = []
+  const wordRows: { segId: string; words: Token[]; caption?: string | null }[] = []
 
   for (const seg of segments) {
     const words: Token[] = []
@@ -248,7 +257,7 @@ export function rebuildSilenceTokensClient(
       }
     }
     if (words.length > 0) {
-      wordRows.push({ segId: seg.id, words })
+      wordRows.push({ segId: seg.id, words, caption: seg.caption })
     }
   }
 
@@ -275,7 +284,7 @@ export function rebuildSilenceTokensClient(
   let prevWordEnd: number | null = null
 
   for (let sIdx = 0; sIdx < wordRows.length; sIdx++) {
-    const { segId, words } = wordRows[sIdx]
+    const { segId, words, caption } = wordRows[sIdx]
     const tokens: Token[] = []
 
     if (sIdx === 0 && words[0].start >= silenceThreshold) {
@@ -349,7 +358,7 @@ export function rebuildSilenceTokensClient(
       }
     }
 
-    out.push({ id: segId, tokens })
+    out.push({ id: segId, tokens, caption })
   }
 
   return out

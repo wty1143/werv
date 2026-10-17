@@ -161,7 +161,10 @@ def generate_remapped_srt(segments: List[Segment], keep_ranges: List[KeepRange])
         if not kept_words:
             continue
 
-        line_text = join_tokens_text(kept_words)
+        if seg.caption is not None:
+            line_text = seg.caption.strip()
+        else:
+            line_text = join_tokens_text(kept_words)
         if not line_text:
             continue
 

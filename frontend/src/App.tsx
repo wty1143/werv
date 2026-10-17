@@ -43,6 +43,7 @@ import {
   computeKeepRanges,
   formatDisplayTime,
   generateRemappedSrtClient,
+  getEffectiveCaption,
   joinSegmentWords,
   makeUid,
   rebuildSilenceTokensClient,
@@ -61,6 +62,7 @@ import {
 const cloneSegments = (segs: Segment[]): Segment[] =>
   segs.map((s) => ({
     id: s.id,
+    caption: s.caption,
     tokens: s.tokens.map((t) => ({ ...t })),
   }))
 
@@ -460,8 +462,8 @@ export default function App() {
 
         const firstHalf = seg.tokens.slice(0, splitPos)
         const secondHalf = seg.tokens.slice(splitPos)
-        nextSegments.push({ id: seg.id, tokens: firstHalf })
-        nextSegments.push({ id: makeUid('seg'), tokens: secondHalf })
+        nextSegments.push({ id: seg.id, tokens: firstHalf, caption: null })
+        nextSegments.push({ id: makeUid('seg'), tokens: secondHalf, caption: null })
         didSplit = true
         if (secondHalf.length > 0) {
           newSplitTokenId = secondHalf[0].id
@@ -492,6 +494,15 @@ export default function App() {
       const currSeg = nextSegments[segIndex]
       const junctionToken =
         prevSeg.tokens.length > 0 ? prevSeg.tokens[prevSeg.tokens.length - 1] : null
+
+      let mergedCaption: string | null = null
+      if (
+        (prevSeg.caption !== null && prevSeg.caption !== undefined) ||
+        (currSeg.caption !== null && currSeg.caption !== undefined)
+      ) {
+        mergedCaption = `${getEffectiveCaption(prevSeg)} ${getEffectiveCaption(currSeg)}`.trim()
+      }
+      prevSeg.caption = mergedCaption
       prevSeg.tokens = [...prevSeg.tokens, ...currSeg.tokens]
       nextSegments.splice(segIndex, 1)
       commitSegments(nextSegments)
@@ -505,6 +516,53 @@ export default function App() {
       setStatusMessage(`已將第 ${segIndex + 1} 列合併至上一列`)
     },
     [segments, commitSegments, scrollTokenIntoView]
+  )
+
+  // Update custom subtitle caption for a segment
+  const handleUpdateSegmentCaption = useCallback(
+    (segId: string, newCaption: string) => {
+      const next = segments.map((s) =>
+        s.id === segId ? { ...s, caption: newCaption } : s
+      )
+      commitSegments(next)
+    },
+    [segments, commitSegments]
+  )
+
+  // Reset segment caption to auto-sync with video cut words
+  const handleResetSegmentCaption = useCallback(
+    (segId: string) => {
+      const next = segments.map((s) =>
+        s.id === segId ? { ...s, caption: null } : s
+      )
+      commitSegments(next)
+      setStatusMessage('已將此列字幕重新同步回 Video Cuts 保留字塊')
+    },
+    [segments, commitSegments]
+  )
+
+  // Quick toggle cut/restore for a single token (Corner hover button)
+  const handleToggleSingleTokenDeleted = useCallback(
+    (tokId: string) => {
+      let willDelete = true
+      for (const seg of segments) {
+        for (const tok of seg.tokens) {
+          if (tok.id === tokId) {
+            willDelete = !tok.deleted
+            break
+          }
+        }
+      }
+      const next = segments.map((seg) => ({
+        ...seg,
+        tokens: seg.tokens.map((tok) =>
+          tok.id === tokId ? { ...tok, deleted: willDelete } : tok
+        ),
+      }))
+      commitSegments(next)
+      setStatusMessage(willDelete ? '已剪除該項目' : '已還原該項目')
+    },
+    [segments, commitSegments]
   )
 
   // Batch Silence Operations (一鍵選取/刪除所有 >= X 秒的氣口)
@@ -1971,13 +2029,29 @@ export default function App() {
                 />
 
                 {/* Vrew-Style Live Broadcast Subtitle Overlay on Video */}
-                {showSubtitleOverlay && activePlaybackInfo.activeSeg && (
-                  <div className="absolute bottom-6 inset-x-6 flex justify-center pointer-events-none">
-                    <div className="bg-black/80 backdrop-blur-md px-4 py-2 rounded-lg border border-white/10 shadow-lg max-w-[92%] text-center">
-                      <div className="flex flex-wrap items-center justify-center gap-0.5 text-base md:text-lg font-bold tracking-wide">
-                        {activePlaybackInfo.activeSeg.tokens
-                          .filter((t) => !t.deleted && t.type === 'word')
-                          .map((tok) => {
+                {showSubtitleOverlay && activePlaybackInfo.activeSeg && (() => {
+                  const seg = activePlaybackInfo.activeSeg
+                  if (seg.caption !== undefined && seg.caption !== null) {
+                    if (!seg.caption.trim()) return null
+                    return (
+                      <div className="absolute bottom-6 inset-x-6 flex justify-center pointer-events-none">
+                        <div className="bg-black/80 backdrop-blur-md px-4 py-2 rounded-lg border border-white/10 shadow-lg max-w-[92%] text-center">
+                          <span className="text-white text-base md:text-lg font-bold tracking-wide">
+                            {seg.caption}
+                          </span>
+                        </div>
+                      </div>
+                    )
+                  }
+
+                  const keptWords = seg.tokens.filter((t) => !t.deleted && t.type === 'word')
+                  if (keptWords.length === 0) return null
+
+                  return (
+                    <div className="absolute bottom-6 inset-x-6 flex justify-center pointer-events-none">
+                      <div className="bg-black/80 backdrop-blur-md px-4 py-2 rounded-lg border border-white/10 shadow-lg max-w-[92%] text-center">
+                        <div className="flex flex-wrap items-center justify-center gap-0.5 text-base md:text-lg font-bold tracking-wide">
+                          {keptWords.map((tok) => {
                             const isCurrent = tok.id === activePlaybackInfo.activeTokenId
                             return (
                               <span
@@ -1992,10 +2066,11 @@ export default function App() {
                               </span>
                             )
                           })}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                )}
+                  )
+                })()}
               </>
             ) : (
               <div className="text-center p-8 text-slate-500 text-sm">
@@ -2468,14 +2543,16 @@ export default function App() {
               const rowStart = seg.tokens[0]?.start ?? 0
               const rowEnd = seg.tokens[seg.tokens.length - 1]?.end ?? 0
               const isRowActive = activePlaybackInfo.activeSeg?.id === seg.id
-              const previewSrtLine = joinSegmentWords(seg.tokens, false)
+              const defaultCaption = joinSegmentWords(seg.tokens, false)
+              const isCustomCaption = seg.caption !== undefined && seg.caption !== null
               const allRowDeleted =
                 seg.tokens.length > 0 && seg.tokens.every((t) => t.deleted)
 
               return (
                 <div
                   key={seg.id}
-                  className={`group rounded-xl border transition-all duration-150 p-3.5 ${
+                  id={`seg-${seg.id}`}
+                  className={`group rounded-2xl border transition-all duration-150 p-3.5 space-y-3 ${
                     isRowActive
                       ? 'bg-[#161c2e] border-cyan-500/50 shadow-lg shadow-cyan-950/20'
                       : allRowDeleted
@@ -2484,7 +2561,7 @@ export default function App() {
                   }`}
                 >
                   {/* Segment Row Header */}
-                  <div className="flex items-center justify-between mb-2.5">
+                  <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2.5">
                       <span
                         className={`text-xs font-mono font-bold px-2 py-0.5 rounded ${
@@ -2511,17 +2588,6 @@ export default function App() {
                         <span>→</span>
                         <span>{formatDisplayTime(rowEnd)}</span>
                       </button>
-
-                      {/* Preview of final SRT line text */}
-                      {previewSrtLine ? (
-                        <span className="text-xs text-slate-400 bg-[#0c0e14] px-2.5 py-0.5 rounded border border-slate-800/80 truncate max-w-md">
-                          SRT: {previewSrtLine}
-                        </span>
-                      ) : (
-                        <span className="text-xs text-rose-400/80 italic">
-                          (整列已剪除，將不輸出至 SRT)
-                        </span>
-                      )}
                     </div>
 
                     {/* Row Quick Actions */}
@@ -2529,7 +2595,7 @@ export default function App() {
                       {segIdx > 0 && (
                         <button
                           onClick={() => handleMergeWithPreviousSegment(segIdx)}
-                          className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 text-[11px] transition"
+                          className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800/80 hover:bg-slate-700 text-slate-300 text-[11px] transition"
                           title="與上一列字幕合併 (列首按 Backspace)"
                         >
                           <Merge className="w-3 h-3 text-indigo-400" />
@@ -2553,7 +2619,7 @@ export default function App() {
                           )
                           commitSegments(next)
                         }}
-                        className="flex items-center gap-1 px-2 py-1 rounded bg-slate-800/80 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 text-[11px] transition"
+                        className="flex items-center gap-1 px-2 py-0.5 rounded bg-slate-800/80 hover:bg-rose-500/20 text-slate-300 hover:text-rose-300 text-[11px] transition"
                       >
                         <Scissors className="w-3 h-3" />
                         <span>{allRowDeleted ? '還原整列' : '剪除整列'}</span>
@@ -2561,134 +2627,194 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Vrew-Style Token Blocks (字元積木 + 氣口積木 + 摺疊已剪支援) */}
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    {(() => {
-                      type RenderItem =
-                        | { type: 'single'; tok: Token }
-                        | { type: 'collapsed'; tokens: Token[] }
+                  {/* Track 1: 🎬 Video Cuts (音畫時間軸積木軌) */}
+                  <div className="flex items-start gap-2.5">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-400 shrink-0 w-[82px] pt-1.5 select-none">
+                      <Film className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                      <span>Video Cuts</span>
+                    </div>
 
-                      const items: RenderItem[] = []
-                      if (!isCollapsedDeleted) {
-                        for (const tok of seg.tokens) {
-                          items.push({ type: 'single', tok })
-                        }
-                      } else {
-                        let delRun: Token[] = []
-                        for (const tok of seg.tokens) {
-                          if (tok.deleted) {
-                            delRun.push(tok)
-                          } else {
-                            if (delRun.length > 0) {
-                              items.push({ type: 'collapsed', tokens: delRun })
-                              delRun = []
-                            }
+                    <div className="flex-1 flex flex-wrap items-center gap-1.5 min-w-0">
+                      {(() => {
+                        type RenderItem =
+                          | { type: 'single'; tok: Token }
+                          | { type: 'collapsed'; tokens: Token[] }
+
+                        const items: RenderItem[] = []
+                        if (!isCollapsedDeleted) {
+                          for (const tok of seg.tokens) {
                             items.push({ type: 'single', tok })
                           }
+                        } else {
+                          let delRun: Token[] = []
+                          for (const tok of seg.tokens) {
+                            if (tok.deleted) {
+                              delRun.push(tok)
+                            } else {
+                              if (delRun.length > 0) {
+                                items.push({ type: 'collapsed', tokens: delRun })
+                                delRun = []
+                              }
+                              items.push({ type: 'single', tok })
+                            }
+                          }
+                          if (delRun.length > 0) {
+                            items.push({ type: 'collapsed', tokens: delRun })
+                          }
                         }
-                        if (delRun.length > 0) {
-                          items.push({ type: 'collapsed', tokens: delRun })
-                        }
-                      }
 
-                      return items.map((item, itemIdx) => {
-                        if (item.type === 'collapsed') {
-                          const count = item.tokens.length
-                          const delText = item.tokens.map((t) => t.text).join('')
-                          return (
-                            <div
-                              key={`collapsed-${item.tokens[0].id}-${itemIdx}`}
-                              onClick={() => {
-                                const ids = new Set(item.tokens.map((t) => t.id))
-                                setSelectedTokenIds(ids)
-                                setCursorTokenId(item.tokens[0].id)
-                                setStatusMessage(`已選取已剪除的 ${count} 個字元/氣口（按 R 可還原）`)
-                              }}
-                              title={`已剪除內容：「${delText}」· 點擊選取，按 R 還原`}
-                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-950/30 hover:bg-rose-950/60 border border-rose-500/30 text-rose-300 text-xs font-mono cursor-pointer transition select-none shadow-sm"
-                            >
-                              <Scissors className="w-3 h-3 text-rose-400 shrink-0" />
-                              <span>已剪 {count} 項</span>
-                            </div>
+                        return items.map((item, itemIdx) => {
+                          if (item.type === 'collapsed') {
+                            const count = item.tokens.length
+                            const delText = item.tokens.map((t) => t.text).join('')
+                            return (
+                              <div
+                                key={`collapsed-${item.tokens[0].id}-${itemIdx}`}
+                                onClick={() => {
+                                  const ids = new Set(item.tokens.map((t) => t.id))
+                                  setSelectedTokenIds(ids)
+                                  setCursorTokenId(item.tokens[0].id)
+                                  setStatusMessage(`已選取已剪除的 ${count} 個字元/氣口（按 R 可還原）`)
+                                }}
+                                title={`已剪除內容：「${delText}」· 點擊選取，按 R 還原`}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-950/30 hover:bg-rose-950/60 border border-rose-500/30 text-rose-300 text-xs font-mono cursor-pointer transition select-none shadow-sm"
+                              >
+                                <Scissors className="w-3 h-3 text-rose-400 shrink-0" />
+                                <span>已剪 {count} 項</span>
+                              </div>
+                            )
+                          }
+
+                          const tok = item.tok
+                          const flatIdx = flatTokens.findIndex(
+                            (it) => it.token.id === tok.id
                           )
-                        }
+                          const isSelected = selectedTokenIds.has(tok.id)
+                          const isPlayingNow = activePlaybackInfo.activeTokenId === tok.id
+                          const isEditingThis = editingTokenId === tok.id
 
-                        const tok = item.tok
-                        const flatIdx = flatTokens.findIndex(
-                          (it) => it.token.id === tok.id
-                        )
-                        const isSelected = selectedTokenIds.has(tok.id)
-                        const isPlayingNow = activePlaybackInfo.activeTokenId === tok.id
-                        const isEditingThis = editingTokenId === tok.id
-
-                        if (isEditingThis) {
-                          return (
-                            <div
-                              key={tok.id}
-                              className="inline-flex items-center bg-indigo-950 border-2 border-indigo-400 rounded-lg px-2 py-1 shadow-lg"
-                            >
-                              <input
-                                type="text"
-                                value={editingText}
-                                autoFocus
-                                onChange={(e) => setEditingText(e.target.value)}
-                                onKeyDown={(e) => {
-                                  if (e.key === 'Enter') {
+                          if (isEditingThis) {
+                            return (
+                              <div
+                                key={tok.id}
+                                className="inline-flex items-center bg-indigo-950 border-2 border-indigo-400 rounded-lg px-2 py-1 shadow-lg"
+                              >
+                                <input
+                                  type="text"
+                                  value={editingText}
+                                  autoFocus
+                                  onChange={(e) => setEditingText(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter') {
+                                      e.preventDefault()
+                                      commitEditingToken()
+                                    } else if (e.key === 'Escape') {
+                                      setEditingTokenId(null)
+                                    }
+                                  }}
+                                  onBlur={commitEditingToken}
+                                  className="w-16 bg-transparent text-white font-bold text-sm focus:outline-none text-center"
+                                />
+                                <button
+                                  onMouseDown={(e) => {
                                     e.preventDefault()
                                     commitEditingToken()
-                                  } else if (e.key === 'Escape') {
-                                    setEditingTokenId(null)
-                                  }
-                                }}
-                                onBlur={commitEditingToken}
-                                className="w-16 bg-transparent text-white font-bold text-sm focus:outline-none text-center"
-                              />
-                              <button
-                                onMouseDown={(e) => {
-                                  e.preventDefault()
-                                  commitEditingToken()
-                                }}
-                                className="ml-1 text-emerald-400 hover:text-emerald-300"
+                                  }}
+                                  className="ml-1 text-emerald-400 hover:text-emerald-300"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                </button>
+                              </div>
+                            )
+                          }
+
+                          const isCaretHere = flatIdx === cursorFlatIndex
+                          const isShortened =
+                            tok.type === 'silence' &&
+                            !tok.deleted &&
+                            tok.keep_duration != null &&
+                            tok.keep_duration > 0 &&
+                            tok.keep_duration < tok.end - tok.start
+
+                          if (tok.type === 'silence') {
+                            return (
+                              <div
+                                key={tok.id}
+                                id={`tok-${tok.id}`}
+                                onMouseDown={(e) => handleTokenMouseDown(e, tok, flatIdx)}
+                                onMouseEnter={() => handleTokenMouseEnter(flatIdx)}
+                                title={
+                                  isShortened
+                                    ? `已縮短氣口：原 ${(tok.end - tok.start).toFixed(2)}s ➔ 保留 ${tok.keep_duration!.toFixed(2)}s (點選按 R 恢復原長度)`
+                                    : `氣口區間：${tok.start.toFixed(2)}s - ${tok.end.toFixed(2)}s (點擊右上角或按空白鍵剪除)`
+                                }
+                                className={`group/tok cursor-pointer px-2.5 py-1.5 rounded-lg text-xs font-mono font-medium border transition-all flex items-center gap-1 relative ${
+                                  tok.deleted
+                                    ? 'line-through opacity-35 bg-rose-950/25 border-rose-500/30 text-rose-300'
+                                    : isSelected
+                                    ? 'bg-amber-400/25 border-amber-400 border-dashed text-amber-200 ring-2 ring-amber-400/30'
+                                    : isPlayingNow
+                                    ? 'bg-amber-500/30 border-amber-300 text-amber-100 scale-105'
+                                    : isShortened
+                                    ? 'bg-cyan-950/40 border-cyan-400/60 text-cyan-200 shadow-sm'
+                                    : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/30 text-amber-300'
+                                }`}
                               >
-                                <Check className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
-                          )
-                        }
+                                {isShortened && <Clock className="w-3 h-3 text-cyan-400 shrink-0" />}
+                                <span>{tok.text}</span>
+                                {isCaretHere && (
+                                  <span
+                                    className={`word-caret ${
+                                      isAtRowStart ? 'caret-left' : 'caret-right'
+                                    }`}
+                                  />
+                                )}
 
-                        const isCaretHere = flatIdx === cursorFlatIndex
-                        const isShortened =
-                          tok.type === 'silence' &&
-                          !tok.deleted &&
-                          tok.keep_duration != null &&
-                          tok.keep_duration > 0 &&
-                          tok.keep_duration < tok.end - tok.start
+                                {/* Corner Hover Quick Cut / Restore Button */}
+                                <button
+                                  type="button"
+                                  onMouseDown={(e) => {
+                                    e.stopPropagation()
+                                    handleToggleSingleTokenDeleted(tok.id)
+                                  }}
+                                  title={tok.deleted ? '點擊還原氣口 (R)' : '點擊剪除氣口'}
+                                  className={`absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center transition-all z-10 shadow-sm ${
+                                    tok.deleted
+                                      ? 'bg-rose-500 hover:bg-rose-400 text-white opacity-90 hover:scale-110'
+                                      : isSelected
+                                      ? 'bg-amber-400 hover:bg-amber-300 text-slate-950 opacity-100 hover:scale-110 border border-amber-300'
+                                      : 'bg-[#1e2436] hover:bg-rose-500 text-slate-400 hover:text-white border border-slate-600 opacity-0 group-hover/tok:opacity-100 hover:scale-110'
+                                  }`}
+                                >
+                                  {tok.deleted ? (
+                                    <RotateCcw className="w-2.5 h-2.5 stroke-[2.5]" />
+                                  ) : (
+                                    <X className="w-2.5 h-2.5 stroke-[2.5]" />
+                                  )}
+                                </button>
+                              </div>
+                            )
+                          }
 
-                        if (tok.type === 'silence') {
+                          // Word / Character Token Block
                           return (
                             <div
                               key={tok.id}
                               id={`tok-${tok.id}`}
                               onMouseDown={(e) => handleTokenMouseDown(e, tok, flatIdx)}
                               onMouseEnter={() => handleTokenMouseEnter(flatIdx)}
-                              title={
-                                isShortened
-                                  ? `已縮短氣口：原 ${(tok.end - tok.start).toFixed(2)}s ➔ 保留 ${tok.keep_duration!.toFixed(2)}s (點選按 R 恢復原長度)`
-                                  : `氣口區間：${tok.start.toFixed(2)}s - ${tok.end.toFixed(2)}s (點擊或按空白鍵剪除)`
-                              }
-                              className={`cursor-pointer px-2.5 py-1.5 rounded-lg text-xs font-mono font-medium border transition-all flex items-center gap-1 relative ${
+                              onDoubleClick={() => startEditingToken(tok)}
+                              title={`${tok.text} (${tok.start.toFixed(2)}s - ${tok.end.toFixed(2)}s) · 雙擊改字，按 E 改詞`}
+                              className={`group/tok cursor-pointer min-w-[34px] px-2.5 py-1.5 rounded-lg text-sm font-semibold border transition-all text-center relative ${
                                 tok.deleted
                                   ? 'line-through opacity-35 bg-rose-950/25 border-rose-500/30 text-rose-300'
                                   : isSelected
-                                  ? 'bg-amber-400/25 border-amber-400 text-amber-200 ring-2 ring-amber-400/30'
+                                  ? 'bg-cyan-500/25 border-cyan-400 border-dashed text-white ring-2 ring-cyan-400/30 shadow-sm'
                                   : isPlayingNow
-                                  ? 'bg-amber-500/30 border-amber-300 text-amber-100 scale-105'
-                                  : isShortened
-                                  ? 'bg-cyan-950/40 border-cyan-400/60 text-cyan-200 shadow-sm'
-                                  : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/30 text-amber-300'
+                                  ? 'bg-cyan-400 text-slate-950 border-cyan-300 shadow-md shadow-cyan-500/25 scale-105'
+                                  : 'bg-[#1b2132] hover:bg-[#232b42] border-slate-700/80 text-slate-100'
                               }`}
                             >
-                              {isShortened && <Clock className="w-3 h-3 text-cyan-400 shrink-0" />}
                               <span>{tok.text}</span>
                               {isCaretHere && (
                                 <span
@@ -2697,41 +2823,98 @@ export default function App() {
                                   }`}
                                 />
                               )}
+
+                              {/* Corner Hover Quick Cut / Restore Button */}
+                              <button
+                                type="button"
+                                onMouseDown={(e) => {
+                                  e.stopPropagation()
+                                  handleToggleSingleTokenDeleted(tok.id)
+                                }}
+                                title={tok.deleted ? '點擊還原此字 (R)' : '點擊剪除此字'}
+                                className={`absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full flex items-center justify-center transition-all z-10 shadow-sm ${
+                                  tok.deleted
+                                    ? 'bg-rose-500 hover:bg-rose-400 text-white opacity-90 hover:scale-110'
+                                    : isSelected
+                                    ? 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 opacity-100 hover:scale-110 border border-cyan-300'
+                                    : 'bg-[#1e2436] hover:bg-rose-500 text-slate-400 hover:text-white border border-slate-600 opacity-0 group-hover/tok:opacity-100 hover:scale-110'
+                                }`}
+                              >
+                                {tok.deleted ? (
+                                  <RotateCcw className="w-2.5 h-2.5 stroke-[2.5]" />
+                                ) : (
+                                  <X className="w-2.5 h-2.5 stroke-[2.5]" />
+                                )}
+                              </button>
                             </div>
                           )
-                        }
+                        })
+                      })()}
+                    </div>
+                  </div>
 
-                        // Word / Character Token Block
-                        return (
-                          <div
-                            key={tok.id}
-                            id={`tok-${tok.id}`}
-                            onMouseDown={(e) => handleTokenMouseDown(e, tok, flatIdx)}
-                            onMouseEnter={() => handleTokenMouseEnter(flatIdx)}
-                            onDoubleClick={() => startEditingToken(tok)}
-                            title={`${tok.text} (${tok.start.toFixed(2)}s - ${tok.end.toFixed(2)}s) · 雙擊可改字，按 E 鍵改詞`}
-                            className={`cursor-pointer min-w-[34px] px-2.5 py-1.5 rounded-lg text-sm font-semibold border transition-all text-center relative ${
-                              tok.deleted
-                                ? 'line-through opacity-35 bg-rose-950/25 border-rose-500/30 text-rose-300'
-                                : isSelected
-                                ? 'bg-cyan-500/25 border-cyan-400 text-white ring-2 ring-cyan-400/30 shadow-sm'
-                                : isPlayingNow
-                                ? 'bg-cyan-400 text-slate-950 border-cyan-300 shadow-md shadow-cyan-500/25 scale-105'
-                                : 'bg-[#1b2132] hover:bg-[#232b42] border-slate-700/80 text-slate-100'
-                            }`}
+                  {/* Track 2: 💬 Subtitle Caption Box (獨立字幕編輯軌) */}
+                  <div className="flex items-center gap-2.5 pt-2 border-t border-slate-800/60">
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-400 shrink-0 w-[82px] select-none">
+                      <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span>螢幕字幕</span>
+                    </div>
+
+                    <div className="flex-1 flex items-center bg-[#0a0c12] hover:bg-[#0d1017] focus-within:bg-[#0d1017] border border-slate-800 focus-within:border-emerald-500/60 rounded-xl px-3 py-1.5 transition-all shadow-inner">
+                      <input
+                        type="text"
+                        value={isCustomCaption ? seg.caption! : defaultCaption}
+                        onChange={(e) => handleUpdateSegmentCaption(seg.id, e.target.value)}
+                        onFocus={() => {
+                          if (videoRef.current && rowStart !== null) {
+                            videoRef.current.currentTime = rowStart
+                            setCurrentTime(rowStart)
+                          }
+                        }}
+                        placeholder={
+                          allRowDeleted
+                            ? '(整列已剪除，將不輸出至字幕)'
+                            : '輸入自訂字幕文字 (直接編輯，不破壞影片時間軸)...'
+                        }
+                        disabled={allRowDeleted}
+                        className={`w-full bg-transparent text-xs font-sans tracking-wide focus:outline-none transition ${
+                          allRowDeleted
+                            ? 'line-through text-slate-600 italic'
+                            : isCustomCaption
+                            ? 'text-emerald-300 font-medium'
+                            : 'text-slate-200'
+                        }`}
+                      />
+
+                      {/* Right Control Badges: [A / ✎ 自訂] & [🔄] */}
+                      <div className="flex items-center gap-1.5 shrink-0 ml-2 select-none">
+                        {isCustomCaption ? (
+                          <span
+                            className="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1"
+                            title="已自訂字幕，螢幕 CC 與 SRT 匯出均以文字框內容為準"
                           >
-                            <span>{tok.text}</span>
-                            {isCaretHere && (
-                              <span
-                                className={`word-caret ${
-                                  isAtRowStart ? 'caret-left' : 'caret-right'
-                                }`}
-                              />
-                            )}
-                          </div>
-                        )
-                      })
-                    })()}
+                            <span>✎ 自訂</span>
+                          </span>
+                        ) : (
+                          <span
+                            className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-800/90 text-slate-400 border border-slate-700/60 font-mono"
+                            title="自動同步中：即時連動 Video Cuts 未刪除之辨識字塊"
+                          >
+                            A
+                          </span>
+                        )}
+
+                        {isCustomCaption && (
+                          <button
+                            onClick={() => handleResetSegmentCaption(seg.id)}
+                            className="p-1 rounded-md bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-emerald-300 transition"
+                            title="重新同步回 Video Cuts 保留字塊"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               )
