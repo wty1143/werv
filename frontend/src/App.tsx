@@ -1,10 +1,17 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ArrowDown,
+  ArrowUp,
   Check,
+  ChevronDown,
+  ChevronRight,
+  ChevronUp,
   Clock,
   CornerDownLeft,
   Download,
   Edit3,
+  Eye,
+  EyeOff,
   FileText,
   Film,
   FolderOpen,
@@ -16,6 +23,7 @@ import {
   RefreshCw,
   RotateCcw,
   Scissors,
+  Search,
   Settings2,
   Sparkles,
   Trash2,
@@ -26,6 +34,11 @@ import {
   X,
   Zap,
 } from 'lucide-react'
+
+const DEFAULT_FILLER_WORDS = [
+  '那個', '就是', '然後', '就是說', '對啊', '這個', '其實', '基本上',
+  '嗯', '啊', '呃', '喔', '欸', '啦', '吧', '呀', '咧',
+]
 import {
   computeKeepRanges,
   formatDisplayTime,
@@ -97,6 +110,25 @@ export default function App() {
   const [isExporting, setIsExporting] = useState<boolean>(false)
   const [showAsrSettings, setShowAsrSettings] = useState<boolean>(false)
   const [showShortcutsModal, setShowShortcutsModal] = useState<boolean>(false)
+
+  // Phase 1: Shorten Silence & Filler Words States
+  const [showShortenModal, setShowShortenModal] = useState<boolean>(false)
+  const [shortenMinSec, setShortenMinSec] = useState<number>(0.5)
+  const [shortenTargetSec, setShortenTargetSec] = useState<number>(0.25)
+  const [showFillerModal, setShowFillerModal] = useState<boolean>(false)
+  const [customFillerTerms, setCustomFillerTerms] = useState<string[]>([])
+  const [customFillerInput, setCustomFillerInput] = useState<string>('')
+  const [checkedFillerWords, setCheckedFillerWords] = useState<Set<string>>(new Set())
+
+  // Phase 2: Phrase Edit, Find & Replace, and Collapse Deleted States
+  const [showPhraseModal, setShowPhraseModal] = useState<boolean>(false)
+  const [phraseInput, setPhraseInput] = useState<string>('')
+  const [showFindReplace, setShowFindReplace] = useState<boolean>(false)
+  const [findQuery, setFindQuery] = useState<string>('')
+  const [replaceQuery, setReplaceQuery] = useState<string>('')
+  const [findMatchIdx, setFindMatchIdx] = useState<number>(0)
+  const [isCollapsedDeleted, setIsCollapsedDeleted] = useState<boolean>(false)
+  const findInputRef = useRef<HTMLInputElement | null>(null)
   const [exportResult, setExportResult] = useState<ExportResponse | null>(null)
   const [statusMessage, setStatusMessage] = useState<string>(
     '就緒 · 支援 Apple Silicon MLX Whisper 與 VideoToolbox 硬體加速'
@@ -542,6 +574,384 @@ export default function App() {
     setEditingText('')
   }
 
+  // Phase 1: Batch Shorten Silences (縮短氣口：將 >= minSec 的氣口濃縮保留為 targetKeep 秒)
+  const handleBatchShortenSilences = (minSec: number, targetKeep: number) => {
+    let count = 0
+    let savedTotal = 0
+    const nextSegments = segments.map((seg) => ({
+      ...seg,
+      tokens: seg.tokens.map((tok) => {
+        if (tok.type === 'silence') {
+          const gap = tok.end - tok.start
+          if (gap >= minSec - 1e-4 && targetKeep < gap) {
+            count++
+            savedTotal += gap - targetKeep
+            return {
+              ...tok,
+              deleted: false,
+              keep_duration: targetKeep,
+              text: `[··· ${gap.toFixed(1)}s ➔ ${targetKeep.toFixed(1)}s]`,
+            }
+          }
+        }
+        return tok
+      }),
+    }))
+    if (count > 0) {
+      commitSegments(nextSegments)
+      setStatusMessage(
+        `已將 ${count} 個 >= ${minSec.toFixed(1)}s 的氣口縮短保留為 ${targetKeep.toFixed(2)}s (共省下約 ${savedTotal.toFixed(1)}s)`
+      )
+    } else {
+      setStatusMessage(`未找到符合條件 (>= ${minSec.toFixed(1)}s) 的長氣口`)
+    }
+    setShowShortenModal(false)
+  }
+
+  // Shorten single selected silence token
+  const handleShortenSelectedSilence = (targetKeep = 0.25) => {
+    if (selectedTokenIds.size === 0) return
+    const idSet = selectedTokenIds
+    const nextSegments = segments.map((seg) => ({
+      ...seg,
+      tokens: seg.tokens.map((tok) => {
+        if (idSet.has(tok.id) && tok.type === 'silence') {
+          const gap = tok.end - tok.start
+          return {
+            ...tok,
+            deleted: false,
+            keep_duration: targetKeep,
+            text: `[··· ${gap.toFixed(1)}s ➔ ${targetKeep.toFixed(1)}s]`,
+          }
+        }
+        return tok
+      }),
+    }))
+    commitSegments(nextSegments)
+    setStatusMessage(`已將選取的氣口縮短保留為 ${targetKeep}s`)
+  }
+
+  // Phase 1: Scan all detected filler words in current segments
+  const detectedFillerList = useMemo(() => {
+    const allTerms = Array.from(new Set([...DEFAULT_FILLER_WORDS, ...customFillerTerms]))
+    const results: { term: string; count: number; tokenIds: string[] }[] = []
+
+    for (const term of allTerms) {
+      const cleanTerm = term.trim()
+      if (!cleanTerm) continue
+      const termLen = cleanTerm.length
+      const matchedIds: string[] = []
+
+      for (const seg of segments) {
+        const words = seg.tokens.filter((t) => !t.deleted && t.type === 'word')
+        for (let i = 0; i <= words.length - termLen; i++) {
+          const sliceText = words.slice(i, i + termLen).map((w) => w.text).join('')
+          if (sliceText === cleanTerm) {
+            for (let k = 0; k < termLen; k++) {
+              matchedIds.push(words[i + k].id)
+            }
+          }
+        }
+      }
+
+      if (matchedIds.length > 0) {
+        results.push({
+          term: cleanTerm,
+          count: Math.round(matchedIds.length / termLen),
+          tokenIds: matchedIds,
+        })
+      }
+    }
+    return results.sort((a, b) => b.count - a.count)
+  }, [segments, customFillerTerms])
+
+  // Select checked filler words in the transcript
+  const handleSelectFillerWords = () => {
+    const toSelect = new Set<string>()
+    for (const item of detectedFillerList) {
+      if (checkedFillerWords.has(item.term)) {
+        item.tokenIds.forEach((id) => toSelect.add(id))
+      }
+    }
+    if (toSelect.size > 0) {
+      setSelectedTokenIds(toSelect)
+      setStatusMessage(`已在文稿中高亮選取 ${toSelect.size} 個贅字/語助詞`)
+      setShowFillerModal(false)
+    } else {
+      setStatusMessage('請先勾選欲選取的贅字詞彙')
+    }
+  }
+
+  // Delete checked filler words directly
+  const handleDeleteFillerWords = () => {
+    const toDelete = new Set<string>()
+    let termsCount = 0
+    for (const item of detectedFillerList) {
+      if (checkedFillerWords.has(item.term)) {
+        item.tokenIds.forEach((id) => toDelete.add(id))
+        termsCount += item.count
+      }
+    }
+    if (toDelete.size === 0) {
+      setStatusMessage('請先勾選欲剪除的贅字詞彙')
+      return
+    }
+
+    const nextSegments = segments.map((seg) => ({
+      ...seg,
+      tokens: seg.tokens.map((tok) =>
+        toDelete.has(tok.id) ? { ...tok, deleted: true } : tok
+      ),
+    }))
+    commitSegments(nextSegments)
+    setStatusMessage(`已一鍵剪除 ${termsCount} 處共 ${toDelete.size} 個贅字與語助詞！`)
+    setShowFillerModal(false)
+  }
+
+  // Phase 2: Open Multi-token Phrase Edit Modal / Bar
+  const handleOpenPhraseModal = () => {
+    if (selectedTokenIds.size === 0) return
+    const selItems = flatTokens.filter((item) => selectedTokenIds.has(item.token.id))
+    if (selItems.length === 0) return
+    const combined = selItems.map((item) => item.token.text).join('')
+    setPhraseInput(combined)
+    setShowPhraseModal(true)
+  }
+
+  // Commit Phrase Edit: Replaces the selected tokens in their segment with new characters
+  const handleCommitPhraseEdit = (newText: string) => {
+    const trimmed = newText.trim()
+    if (!trimmed || selectedTokenIds.size === 0) {
+      setShowPhraseModal(false)
+      return
+    }
+
+    const selItems = flatTokens.filter((item) => selectedTokenIds.has(item.token.id))
+    if (selItems.length === 0) {
+      setShowPhraseModal(false)
+      return
+    }
+
+    const targetSegId = selItems[0].segId
+    const firstTok = selItems[0].token
+    const lastTok = selItems[selItems.length - 1].token
+    const spanStart = firstTok.start
+    const spanEnd = Math.max(spanStart + 0.05, lastTok.end)
+    const totalSpan = spanEnd - spanStart
+
+    const chars = Array.from(trimmed)
+    const charDur = Number((totalSpan / chars.length).toFixed(3))
+
+    const newTokens: Token[] = chars.map((ch, idx) => {
+      const s = Number((spanStart + idx * charDur).toFixed(3))
+      const e = idx === chars.length - 1 ? spanEnd : Number((s + charDur).toFixed(3))
+      return {
+        id: makeUid('tok'),
+        type: 'word',
+        text: ch,
+        start: s,
+        end: e,
+        deleted: false,
+      }
+    })
+
+    const nextSegments = segments.map((seg) => {
+      if (seg.id !== targetSegId) return seg
+      const nextToks: Token[] = []
+      let inserted = false
+      for (const tok of seg.tokens) {
+        if (selectedTokenIds.has(tok.id)) {
+          if (!inserted) {
+            nextToks.push(...newTokens)
+            inserted = true
+          }
+        } else {
+          nextToks.push(tok)
+        }
+      }
+      return { ...seg, tokens: nextToks }
+    })
+
+    commitSegments(nextSegments)
+    setSelectedTokenIds(new Set(newTokens.map((t) => t.id)))
+    setCursorTokenId(newTokens[newTokens.length - 1].id)
+    setStatusMessage(`已將文字修改為「${trimmed}」（時間軸已自動均分重算）`)
+    setShowPhraseModal(false)
+  }
+
+  // Phase 2: Find & Replace match list across all segments
+  const searchMatches = useMemo(() => {
+    if (!findQuery.trim()) return []
+    const q = findQuery.trim()
+    const qLen = q.length
+    const list: {
+      segIndex: number
+      segId: string
+      tokenIds: string[]
+      start: number
+      text: string
+    }[] = []
+
+    segments.forEach((seg, sIdx) => {
+      const words = seg.tokens.filter((t) => t.type === 'word')
+      for (let i = 0; i <= words.length - qLen; i++) {
+        const sliceText = words.slice(i, i + qLen).map((w) => w.text).join('')
+        if (sliceText.toLowerCase().includes(q.toLowerCase())) {
+          const tokenIds = words.slice(i, i + qLen).map((w) => w.id)
+          list.push({
+            segIndex: sIdx,
+            segId: seg.id,
+            tokenIds,
+            start: words[i].start,
+            text: sliceText,
+          })
+        }
+      }
+    })
+    return list
+  }, [segments, findQuery])
+
+  const handleFindNext = () => {
+    if (searchMatches.length === 0) return
+    const nextIdx = (findMatchIdx + 1) % searchMatches.length
+    setFindMatchIdx(nextIdx)
+    const target = searchMatches[nextIdx]
+    setSelectedTokenIds(new Set(target.tokenIds))
+    setCursorTokenId(target.tokenIds[0])
+    scrollTokenIntoView(target.tokenIds[0])
+    if (videoRef.current) {
+      videoRef.current.currentTime = target.start
+      setCurrentTime(target.start)
+    }
+  }
+
+  const handleFindPrev = () => {
+    if (searchMatches.length === 0) return
+    const prevIdx = (findMatchIdx - 1 + searchMatches.length) % searchMatches.length
+    setFindMatchIdx(prevIdx)
+    const target = searchMatches[prevIdx]
+    setSelectedTokenIds(new Set(target.tokenIds))
+    setCursorTokenId(target.tokenIds[0])
+    scrollTokenIntoView(target.tokenIds[0])
+    if (videoRef.current) {
+      videoRef.current.currentTime = target.start
+      setCurrentTime(target.start)
+    }
+  }
+
+  const handleSelectAllMatches = () => {
+    if (searchMatches.length === 0) return
+    const allIds = new Set<string>()
+    searchMatches.forEach((m) => m.tokenIds.forEach((id) => allIds.add(id)))
+    setSelectedTokenIds(allIds)
+    setStatusMessage(`已全選 ${searchMatches.length} 處符合項目，可按 Backspace 一鍵剪除！`)
+  }
+
+  const handleReplaceCurrentMatch = () => {
+    if (searchMatches.length === 0) return
+    const currentMatch = searchMatches[findMatchIdx % searchMatches.length]
+    if (!currentMatch) return
+
+    const trimmed = replaceQuery.trim()
+    const targetSegId = currentMatch.segId
+    const targetIds = new Set(currentMatch.tokenIds)
+
+    const nextSegments = segments.map((seg) => {
+      if (seg.id !== targetSegId) return seg
+      const selToks = seg.tokens.filter((t) => targetIds.has(t.id))
+      if (selToks.length === 0) return seg
+      const spanStart = selToks[0].start
+      const spanEnd = selToks[selToks.length - 1].end
+      const dur = Math.max(0.04 * trimmed.length, spanEnd - spanStart)
+
+      const chars = Array.from(trimmed)
+      const charDur = Number((dur / chars.length).toFixed(3))
+      const newTokens: Token[] = chars.map((ch, idx) => ({
+        id: makeUid('tok'),
+        type: 'word',
+        text: ch,
+        start: Number((spanStart + idx * charDur).toFixed(3)),
+        end: idx === chars.length - 1 ? spanEnd : Number((spanStart + (idx + 1) * charDur).toFixed(3)),
+        deleted: false,
+      }))
+
+      const nextToks: Token[] = []
+      let inserted = false
+      for (const tok of seg.tokens) {
+        if (targetIds.has(tok.id)) {
+          if (!inserted) {
+            nextToks.push(...newTokens)
+            inserted = true
+          }
+        } else {
+          nextToks.push(tok)
+        }
+      }
+      return { ...seg, tokens: nextToks }
+    })
+
+    commitSegments(nextSegments)
+    setStatusMessage(`已將符合項目取代為「${trimmed}」`)
+  }
+
+  const handleReplaceAllMatches = () => {
+    if (searchMatches.length === 0) return
+    const trimmed = replaceQuery.trim()
+    if (!trimmed) return
+
+    const segMatchesMap = new Map<string, typeof searchMatches>()
+    for (const m of searchMatches) {
+      const arr = segMatchesMap.get(m.segId) || []
+      arr.push(m)
+      segMatchesMap.set(m.segId, arr)
+    }
+
+    const nextSegments = segments.map((seg) => {
+      const matchesInSeg = segMatchesMap.get(seg.id)
+      if (!matchesInSeg || matchesInSeg.length === 0) return seg
+
+      let currentToks = [...seg.tokens]
+      for (const m of matchesInSeg) {
+        const targetIds = new Set(m.tokenIds)
+        const selToks = currentToks.filter((t) => targetIds.has(t.id))
+        if (selToks.length === 0) continue
+        const spanStart = selToks[0].start
+        const spanEnd = selToks[selToks.length - 1].end
+        const dur = Math.max(0.04 * trimmed.length, spanEnd - spanStart)
+        const chars = Array.from(trimmed)
+        const charDur = Number((dur / chars.length).toFixed(3))
+        const newTokens: Token[] = chars.map((ch, idx) => ({
+          id: makeUid('tok'),
+          type: 'word',
+          text: ch,
+          start: Number((spanStart + idx * charDur).toFixed(3)),
+          end: idx === chars.length - 1 ? spanEnd : Number((spanStart + (idx + 1) * charDur).toFixed(3)),
+          deleted: false,
+        }))
+
+        const rebuilt: Token[] = []
+        let inserted = false
+        for (const tok of currentToks) {
+          if (targetIds.has(tok.id)) {
+            if (!inserted) {
+              rebuilt.push(...newTokens)
+              inserted = true
+            }
+          } else {
+            rebuilt.push(tok)
+          }
+        }
+        currentToks = rebuilt
+      }
+      return { ...seg, tokens: currentToks }
+    })
+
+    const totalCount = searchMatches.length
+    commitSegments(nextSegments)
+    setStatusMessage(`已成功批量取代全片 ${totalCount} 處符合項目為「${trimmed}」！`)
+    setShowFindReplace(false)
+  }
+
   // Click / Drag token selection & video seek
   const handleTokenMouseDown = (
     e: React.MouseEvent,
@@ -984,6 +1394,28 @@ export default function App() {
         return
       }
 
+      // Find & Replace: Cmd+F / Ctrl+F
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault()
+        setShowFindReplace((prev) => {
+          const next = !prev
+          if (next) {
+            setTimeout(() => findInputRef.current?.focus(), 60)
+          }
+          return next
+        })
+        return
+      }
+
+      // Multi-token phrase edit: E key
+      if (e.key.toLowerCase() === 'e' && !e.metaKey && !e.ctrlKey) {
+        if (selectedTokenIds.size > 0 && editorMode !== 'edit') {
+          e.preventDefault()
+          handleOpenPhraseModal()
+          return
+        }
+      }
+
       // R key: Restore deleted token(s)
       if (e.key.toLowerCase() === 'r' && !e.metaKey && !e.ctrlKey) {
         e.preventDefault()
@@ -1021,8 +1453,24 @@ export default function App() {
         return
       }
 
-      // Escape: Clear token selection
+      // Escape: Close modals, search bar, or clear token selection
       if (e.key === 'Escape') {
+        if (showFindReplace) {
+          setShowFindReplace(false)
+          return
+        }
+        if (showPhraseModal) {
+          setShowPhraseModal(false)
+          return
+        }
+        if (showShortenModal) {
+          setShowShortenModal(false)
+          return
+        }
+        if (showFillerModal) {
+          setShowFillerModal(false)
+          return
+        }
         setSelectedTokenIds(new Set())
         setCursorTokenId(null)
         setIsAtRowStart(false)
@@ -1048,6 +1496,11 @@ export default function App() {
     toggleSelectedDeleted,
     commitSegments,
     scrollTokenIntoView,
+    showFindReplace,
+    showPhraseModal,
+    showShortenModal,
+    showFillerModal,
+    handleOpenPhraseModal,
   ])
 
   // Currently active segment & token for video subtitle overlay
@@ -1274,6 +1727,44 @@ export default function App() {
           >
             <Keyboard className="w-3.5 h-3.5 text-cyan-400" />
             <span>快捷鍵說明</span>
+          </button>
+
+          {/* Find & Replace Button */}
+          <button
+            onClick={() => {
+              setShowFindReplace((v) => {
+                const next = !v
+                if (next) setTimeout(() => findInputRef.current?.focus(), 60)
+                return next
+              })
+            }}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs transition shrink-0 ${
+              showFindReplace
+                ? 'bg-cyan-500/20 border-cyan-400/50 text-cyan-200'
+                : 'bg-[#1c2130] hover:bg-[#252c40] border-slate-700/80 text-slate-300'
+            }`}
+            title="尋找與取代 (⌘F)"
+          >
+            <Search className="w-3.5 h-3.5 text-cyan-400" />
+            <span>尋找取代 (⌘F)</span>
+          </button>
+
+          {/* Collapse Deleted Toggle */}
+          <button
+            onClick={() => setIsCollapsedDeleted((v) => !v)}
+            className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs transition shrink-0 ${
+              isCollapsedDeleted
+                ? 'bg-rose-500/20 border-rose-400/50 text-rose-200'
+                : 'bg-[#1c2130] hover:bg-[#252c40] border-slate-700/80 text-slate-300'
+            }`}
+            title="摺疊或展開所有已剪除的文字"
+          >
+            {isCollapsedDeleted ? (
+              <EyeOff className="w-3.5 h-3.5 text-rose-400" />
+            ) : (
+              <Eye className="w-3.5 h-3.5 text-slate-400" />
+            )}
+            <span>{isCollapsedDeleted ? '展開已剪' : '摺疊已剪'}</span>
           </button>
         </div>
 
@@ -1671,6 +2162,30 @@ export default function App() {
                 <span>一鍵剪除氣口 (&ge;{batchSilenceMin.toFixed(1)}s)</span>
               </button>
 
+              {/* Shorten Silence Button */}
+              <button
+                onClick={() => setShowShortenModal(true)}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 text-xs font-medium transition shrink-0 whitespace-nowrap"
+                title="將超過長度的氣口縮短保留為自然換氣時間（如 0.25s）"
+              >
+                <Clock className="w-3.5 h-3.5 shrink-0" />
+                <span>縮短氣口...</span>
+              </button>
+
+              {/* Filler Words Removal Button */}
+              <button
+                onClick={() => {
+                  const initialChecked = new Set(detectedFillerList.map((f) => f.term))
+                  setCheckedFillerWords(initialChecked)
+                  setShowFillerModal(true)
+                }}
+                className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-indigo-500/15 hover:bg-indigo-500/25 text-indigo-300 border border-indigo-500/35 text-xs font-medium transition shrink-0 whitespace-nowrap"
+                title="檢測並批量剪除語助詞與口頭贅字（如：那個、就是、嗯）"
+              >
+                <Sparkles className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+                <span>贅字清理 ({detectedFillerList.reduce((acc, f) => acc + f.count, 0)})</span>
+              </button>
+
               {(stats.deletedWords > 0 || stats.deletedSilences > 0) && (
                 <button
                   onClick={handleRestoreAllTokens}
@@ -1698,28 +2213,70 @@ export default function App() {
                       }
                       return false
                     })
+                    const hasSelectedWord = Array.from(selectedTokenIds).some((id) => {
+                      for (const s of segments) {
+                        for (const t of s.tokens) {
+                          if (t.id === id) return t.type === 'word'
+                        }
+                      }
+                      return false
+                    })
+                    const hasSelectedSilence = Array.from(selectedTokenIds).some((id) => {
+                      for (const s of segments) {
+                        for (const t of s.tokens) {
+                          if (t.id === id) return t.type === 'silence'
+                        }
+                      }
+                      return false
+                    })
                     return (
-                      <button
-                        onClick={toggleSelectedDeleted}
-                        className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-medium transition shrink-0 whitespace-nowrap ${
-                          allSelectedDeleted
-                            ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border-emerald-500/40'
-                            : 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border-rose-500/40'
-                        }`}
-                        title={allSelectedDeleted ? '按 R 或點擊此處還原' : '按 Backspace 或點擊此處剪除'}
-                      >
-                        {allSelectedDeleted ? (
-                          <>
-                            <RotateCcw className="w-3.5 h-3.5 shrink-0" />
-                            <span>還原所選 (R)</span>
-                          </>
-                        ) : (
-                          <>
-                            <Trash2 className="w-3.5 h-3.5 shrink-0" />
-                            <span>剪除所選 (Backspace)</span>
-                          </>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          onClick={toggleSelectedDeleted}
+                          className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-medium transition shrink-0 whitespace-nowrap ${
+                            allSelectedDeleted
+                              ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border-emerald-500/40'
+                              : 'bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border-rose-500/40'
+                          }`}
+                          title={allSelectedDeleted ? '按 R 或點擊此處還原' : '按 Backspace 或點擊此處剪除'}
+                        >
+                          {allSelectedDeleted ? (
+                            <>
+                              <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                              <span>還原所選 (R)</span>
+                            </>
+                          ) : (
+                            <>
+                              <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                              <span>剪除所選 (Backspace)</span>
+                            </>
+                          )}
+                        </button>
+
+                        {/* Multi-token Phrase Edit Button */}
+                        {hasSelectedWord && (
+                          <button
+                            onClick={handleOpenPhraseModal}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-300 border border-indigo-500/40 text-xs font-medium transition shrink-0 whitespace-nowrap"
+                            title="修改選取的文字詞彙 (E)"
+                          >
+                            <Edit3 className="w-3 h-3 shrink-0" />
+                            <span>改詞 (E)</span>
+                          </button>
                         )}
-                      </button>
+
+                        {/* Quick shorten silence button for selected silence */}
+                        {hasSelectedSilence && (
+                          <button
+                            onClick={() => handleShortenSelectedSilence(0.25)}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-medium transition shrink-0 whitespace-nowrap"
+                            title="將選取的氣口縮短保留為 0.25s"
+                          >
+                            <Clock className="w-3 h-3 shrink-0" />
+                            <span>縮短為 0.25s</span>
+                          </button>
+                        )}
+                      </div>
                     )
                   })()}
                   {selectedTokenIds.size === 1 && (
@@ -1734,11 +2291,112 @@ export default function App() {
                 </>
               ) : (
                 <span className="text-xs text-slate-400 shrink-0 whitespace-nowrap hidden sm:inline">
-                  💡 提示：按 <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">Backspace</kbd> 剪除；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">R</kbd> 還原；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">⌘Z</kbd> 復原；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">Space</kbd> 試聽；雙擊改錯字
+                  💡 提示：按 <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">Backspace</kbd> 剪除；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">E</kbd> 改詞；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">⌘F</kbd> 搜尋；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">R</kbd> 還原；<kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-200 border border-slate-700">⌘Z</kbd> 復原
                 </span>
               )}
             </div>
           </div>
+
+          {/* FLOATING FIND & REPLACE BAR (⌘F) */}
+          {showFindReplace && (
+            <div className="bg-[#151928] border-b border-cyan-500/40 px-5 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs z-10 shrink-0 shadow-lg">
+              <div className="flex items-center gap-2 flex-1 max-w-3xl flex-wrap">
+                {/* Find Input */}
+                <div className="flex items-center bg-[#0c0e14] border border-slate-700 focus-within:border-cyan-400 rounded-lg px-2.5 py-1 min-w-[200px] flex-1">
+                  <Search className="w-3.5 h-3.5 text-slate-400 mr-2 shrink-0" />
+                  <input
+                    ref={findInputRef}
+                    type="text"
+                    value={findQuery}
+                    onChange={(e) => {
+                      setFindQuery(e.target.value)
+                      setFindMatchIdx(0)
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        if (e.shiftKey) handleFindPrev()
+                        else handleFindNext()
+                      }
+                    }}
+                    placeholder="尋找文字 (Enter 下一個，Shift+Enter 上一個)..."
+                    className="w-full bg-transparent text-white focus:outline-none text-xs"
+                  />
+                  {searchMatches.length > 0 ? (
+                    <span className="text-[11px] font-mono text-cyan-400 shrink-0 ml-1.5 whitespace-nowrap">
+                      {findMatchIdx + 1}/{searchMatches.length}
+                    </span>
+                  ) : findQuery.trim() ? (
+                    <span className="text-[11px] text-slate-500 shrink-0 ml-1.5 whitespace-nowrap">
+                      無符合
+                    </span>
+                  ) : null}
+                </div>
+
+                {/* Replace Input */}
+                <div className="flex items-center bg-[#0c0e14] border border-slate-700 focus-within:border-cyan-400 rounded-lg px-2.5 py-1 min-w-[180px] flex-1">
+                  <Edit3 className="w-3.5 h-3.5 text-slate-400 mr-2 shrink-0" />
+                  <input
+                    type="text"
+                    value={replaceQuery}
+                    onChange={(e) => setReplaceQuery(e.target.value)}
+                    placeholder="取代為..."
+                    className="w-full bg-transparent text-white focus:outline-none text-xs"
+                  />
+                </div>
+
+                {/* Navigation & Replace Buttons */}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    onClick={handleFindPrev}
+                    disabled={searchMatches.length === 0}
+                    className="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 transition"
+                    title="上一個 (Shift+Enter)"
+                  >
+                    <ArrowUp className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={handleFindNext}
+                    disabled={searchMatches.length === 0}
+                    className="p-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 disabled:opacity-30 transition"
+                    title="下一個 (Enter)"
+                  >
+                    <ArrowDown className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={handleSelectAllMatches}
+                    disabled={searchMatches.length === 0}
+                    className="px-2 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-[11px] disabled:opacity-30 transition whitespace-nowrap"
+                    title="全選所有符合的字詞，可直接按 Backspace 批量剪除"
+                  >
+                    全選符合項
+                  </button>
+                  <button
+                    onClick={handleReplaceCurrentMatch}
+                    disabled={searchMatches.length === 0}
+                    className="px-2.5 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white font-medium text-[11px] disabled:opacity-30 transition whitespace-nowrap"
+                  >
+                    取代
+                  </button>
+                  <button
+                    onClick={handleReplaceAllMatches}
+                    disabled={searchMatches.length === 0}
+                    className="px-2.5 py-1 rounded bg-indigo-500 hover:bg-indigo-400 text-white font-bold text-[11px] disabled:opacity-30 transition whitespace-nowrap shadow-sm shadow-indigo-500/20"
+                  >
+                    全部取代
+                  </button>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setShowFindReplace(false)}
+                className="p-1.5 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition shrink-0"
+                title="關閉尋找列 (Esc)"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
 
           {/* TRANSCRIPT ROWS SCROLLER */}
           <div className="flex-1 overflow-y-auto transcript-scroller p-5 space-y-3">
@@ -1839,69 +2497,163 @@ export default function App() {
                     </div>
                   </div>
 
-                  {/* Vrew-Style Token Blocks (字元積木 + 氣口積木) */}
+                  {/* Vrew-Style Token Blocks (字元積木 + 氣口積木 + 摺疊已剪支援) */}
                   <div className="flex flex-wrap items-center gap-1.5">
-                    {seg.tokens.map((tok) => {
-                      const flatIdx = flatTokens.findIndex(
-                        (item) => item.token.id === tok.id
-                      )
-                      const isSelected = selectedTokenIds.has(tok.id)
-                      const isPlayingNow = activePlaybackInfo.activeTokenId === tok.id
-                      const isEditingThis = editingTokenId === tok.id
+                    {(() => {
+                      type RenderItem =
+                        | { type: 'single'; tok: Token }
+                        | { type: 'collapsed'; tokens: Token[] }
 
-                      if (isEditingThis) {
-                        return (
-                          <div
-                            key={tok.id}
-                            className="inline-flex items-center bg-indigo-950 border-2 border-indigo-400 rounded-lg px-2 py-1 shadow-lg"
-                          >
-                            <input
-                              type="text"
-                              value={editingText}
-                              autoFocus
-                              onChange={(e) => setEditingText(e.target.value)}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault()
-                                  commitEditingToken()
-                                } else if (e.key === 'Escape') {
-                                  setEditingTokenId(null)
-                                }
-                              }}
-                              onBlur={commitEditingToken}
-                              className="w-16 bg-transparent text-white font-bold text-sm focus:outline-none text-center"
-                            />
-                            <button
-                              onMouseDown={(e) => {
-                                e.preventDefault()
-                                commitEditingToken()
-                              }}
-                              className="ml-1 text-emerald-400 hover:text-emerald-300"
-                            >
-                              <Check className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )
+                      const items: RenderItem[] = []
+                      if (!isCollapsedDeleted) {
+                        for (const tok of seg.tokens) {
+                          items.push({ type: 'single', tok })
+                        }
+                      } else {
+                        let delRun: Token[] = []
+                        for (const tok of seg.tokens) {
+                          if (tok.deleted) {
+                            delRun.push(tok)
+                          } else {
+                            if (delRun.length > 0) {
+                              items.push({ type: 'collapsed', tokens: delRun })
+                              delRun = []
+                            }
+                            items.push({ type: 'single', tok })
+                          }
+                        }
+                        if (delRun.length > 0) {
+                          items.push({ type: 'collapsed', tokens: delRun })
+                        }
                       }
 
-                      const isCaretHere = flatIdx === cursorFlatIndex
+                      return items.map((item, itemIdx) => {
+                        if (item.type === 'collapsed') {
+                          const count = item.tokens.length
+                          const delText = item.tokens.map((t) => t.text).join('')
+                          return (
+                            <div
+                              key={`collapsed-${item.tokens[0].id}-${itemIdx}`}
+                              onClick={() => {
+                                const ids = new Set(item.tokens.map((t) => t.id))
+                                setSelectedTokenIds(ids)
+                                setCursorTokenId(item.tokens[0].id)
+                                setStatusMessage(`已選取已剪除的 ${count} 個字元/氣口（按 R 可還原）`)
+                              }}
+                              title={`已剪除內容：「${delText}」· 點擊選取，按 R 還原`}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-950/30 hover:bg-rose-950/60 border border-rose-500/30 text-rose-300 text-xs font-mono cursor-pointer transition select-none shadow-sm"
+                            >
+                              <Scissors className="w-3 h-3 text-rose-400 shrink-0" />
+                              <span>已剪 {count} 項</span>
+                            </div>
+                          )
+                        }
 
-                      if (tok.type === 'silence') {
+                        const tok = item.tok
+                        const flatIdx = flatTokens.findIndex(
+                          (it) => it.token.id === tok.id
+                        )
+                        const isSelected = selectedTokenIds.has(tok.id)
+                        const isPlayingNow = activePlaybackInfo.activeTokenId === tok.id
+                        const isEditingThis = editingTokenId === tok.id
+
+                        if (isEditingThis) {
+                          return (
+                            <div
+                              key={tok.id}
+                              className="inline-flex items-center bg-indigo-950 border-2 border-indigo-400 rounded-lg px-2 py-1 shadow-lg"
+                            >
+                              <input
+                                type="text"
+                                value={editingText}
+                                autoFocus
+                                onChange={(e) => setEditingText(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    e.preventDefault()
+                                    commitEditingToken()
+                                  } else if (e.key === 'Escape') {
+                                    setEditingTokenId(null)
+                                  }
+                                }}
+                                onBlur={commitEditingToken}
+                                className="w-16 bg-transparent text-white font-bold text-sm focus:outline-none text-center"
+                              />
+                              <button
+                                onMouseDown={(e) => {
+                                  e.preventDefault()
+                                  commitEditingToken()
+                                }}
+                                className="ml-1 text-emerald-400 hover:text-emerald-300"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )
+                        }
+
+                        const isCaretHere = flatIdx === cursorFlatIndex
+                        const isShortened =
+                          tok.type === 'silence' &&
+                          !tok.deleted &&
+                          tok.keep_duration != null &&
+                          tok.keep_duration > 0 &&
+                          tok.keep_duration < tok.end - tok.start
+
+                        if (tok.type === 'silence') {
+                          return (
+                            <div
+                              key={tok.id}
+                              id={`tok-${tok.id}`}
+                              onMouseDown={(e) => handleTokenMouseDown(e, tok, flatIdx)}
+                              onMouseEnter={() => handleTokenMouseEnter(flatIdx)}
+                              title={
+                                isShortened
+                                  ? `已縮短氣口：原 ${(tok.end - tok.start).toFixed(2)}s ➔ 保留 ${tok.keep_duration!.toFixed(2)}s (點選按 R 恢復原長度)`
+                                  : `氣口區間：${tok.start.toFixed(2)}s - ${tok.end.toFixed(2)}s (點擊或按空白鍵剪除)`
+                              }
+                              className={`cursor-pointer px-2.5 py-1.5 rounded-lg text-xs font-mono font-medium border transition-all flex items-center gap-1 relative ${
+                                tok.deleted
+                                  ? 'line-through opacity-35 bg-rose-950/25 border-rose-500/30 text-rose-300'
+                                  : isSelected
+                                  ? 'bg-amber-400/25 border-amber-400 text-amber-200 ring-2 ring-amber-400/30'
+                                  : isPlayingNow
+                                  ? 'bg-amber-500/30 border-amber-300 text-amber-100 scale-105'
+                                  : isShortened
+                                  ? 'bg-cyan-950/40 border-cyan-400/60 text-cyan-200 shadow-sm'
+                                  : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/30 text-amber-300'
+                              }`}
+                            >
+                              {isShortened && <Clock className="w-3 h-3 text-cyan-400 shrink-0" />}
+                              <span>{tok.text}</span>
+                              {isCaretHere && (
+                                <span
+                                  className={`word-caret ${
+                                    isAtRowStart ? 'caret-left' : 'caret-right'
+                                  }`}
+                                />
+                              )}
+                            </div>
+                          )
+                        }
+
+                        // Word / Character Token Block
                         return (
                           <div
                             key={tok.id}
                             id={`tok-${tok.id}`}
                             onMouseDown={(e) => handleTokenMouseDown(e, tok, flatIdx)}
                             onMouseEnter={() => handleTokenMouseEnter(flatIdx)}
-                            title={`氣口區間：${tok.start.toFixed(2)}s - ${tok.end.toFixed(2)}s (點擊或按空白鍵剪除)`}
-                            className={`cursor-pointer px-2.5 py-1.5 rounded-lg text-xs font-mono font-medium border transition-all flex items-center gap-1 relative ${
+                            onDoubleClick={() => startEditingToken(tok)}
+                            title={`${tok.text} (${tok.start.toFixed(2)}s - ${tok.end.toFixed(2)}s) · 雙擊可改字，按 E 鍵改詞`}
+                            className={`cursor-pointer min-w-[34px] px-2.5 py-1.5 rounded-lg text-sm font-semibold border transition-all text-center relative ${
                               tok.deleted
                                 ? 'line-through opacity-35 bg-rose-950/25 border-rose-500/30 text-rose-300'
                                 : isSelected
-                                ? 'bg-amber-400/25 border-amber-400 text-amber-200 ring-2 ring-amber-400/30'
+                                ? 'bg-cyan-500/25 border-cyan-400 text-white ring-2 ring-cyan-400/30 shadow-sm'
                                 : isPlayingNow
-                                ? 'bg-amber-500/30 border-amber-300 text-amber-100 scale-105'
-                                : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/30 text-amber-300'
+                                ? 'bg-cyan-400 text-slate-950 border-cyan-300 shadow-md shadow-cyan-500/25 scale-105'
+                                : 'bg-[#1b2132] hover:bg-[#232b42] border-slate-700/80 text-slate-100'
                             }`}
                           >
                             <span>{tok.text}</span>
@@ -1914,38 +2666,8 @@ export default function App() {
                             )}
                           </div>
                         )
-                      }
-
-                      // Word / Character Token Block
-                      return (
-                        <div
-                          key={tok.id}
-                          id={`tok-${tok.id}`}
-                          onMouseDown={(e) => handleTokenMouseDown(e, tok, flatIdx)}
-                          onMouseEnter={() => handleTokenMouseEnter(flatIdx)}
-                          onDoubleClick={() => startEditingToken(tok)}
-                          title={`${tok.text} (${tok.start.toFixed(2)}s - ${tok.end.toFixed(2)}s) · 雙擊可改錯字`}
-                          className={`cursor-pointer min-w-[34px] px-2.5 py-1.5 rounded-lg text-sm font-semibold border transition-all text-center relative ${
-                            tok.deleted
-                              ? 'line-through opacity-35 bg-rose-950/25 border-rose-500/30 text-rose-300'
-                              : isSelected
-                              ? 'bg-cyan-500/25 border-cyan-400 text-white ring-2 ring-cyan-400/30 shadow-sm'
-                              : isPlayingNow
-                              ? 'bg-cyan-400 text-slate-950 border-cyan-300 shadow-md shadow-cyan-500/25 scale-105'
-                              : 'bg-[#1b2132] hover:bg-[#232b42] border-slate-700/80 text-slate-100'
-                          }`}
-                        >
-                          <span>{tok.text}</span>
-                          {isCaretHere && (
-                            <span
-                              className={`word-caret ${
-                                isAtRowStart ? 'caret-left' : 'caret-right'
-                              }`}
-                            />
-                          )}
-                        </div>
-                      )
-                    })}
+                      })
+                    })()}
                   </div>
                 </div>
               )
@@ -2087,6 +2809,441 @@ export default function App() {
         </div>
       )}
 
+      {/* PHASE 1: SHORTEN SILENCES MODAL */}
+      {showShortenModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-6 z-50">
+          <div className="bg-[#151925] border border-cyan-500/30 rounded-2xl max-w-lg w-full p-6 shadow-2xl space-y-5">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
+                  <Clock className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">氣口縮短 (保留自然換氣停頓)</h3>
+                  <p className="text-[11px] text-slate-400">
+                    將過長的氣口縮短保留為自然呼吸長度，避免直接一刀切斷造成喘不過氣
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowShortenModal(false)}
+                className="p-1 rounded-lg hover:bg-slate-800 text-slate-400"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Quick Presets */}
+            <div className="space-y-1.5">
+              <label className="text-xs text-slate-400">推薦預設模式</label>
+              <div className="grid grid-cols-3 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShortenMinSec(0.5)
+                    setShortenTargetSec(0.25)
+                  }}
+                  className={`p-2.5 rounded-xl border text-left transition ${
+                    shortenMinSec === 0.5 && shortenTargetSec === 0.25
+                      ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                      : 'bg-[#0c0e14] border-slate-800 hover:border-slate-700 text-slate-300'
+                  }`}
+                >
+                  <div className="text-xs font-bold">自然呼吸 (推薦)</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">&ge;0.5s 縮為 0.25s</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShortenMinSec(0.4)
+                    setShortenTargetSec(0.15)
+                  }}
+                  className={`p-2.5 rounded-xl border text-left transition ${
+                    shortenMinSec === 0.4 && shortenTargetSec === 0.15
+                      ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                      : 'bg-[#0c0e14] border-slate-800 hover:border-slate-700 text-slate-300'
+                  }`}
+                >
+                  <div className="text-xs font-bold">緊湊節奏</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">&ge;0.4s 縮為 0.15s</div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShortenMinSec(0.6)
+                    setShortenTargetSec(0.3)
+                  }}
+                  className={`p-2.5 rounded-xl border text-left transition ${
+                    shortenMinSec === 0.6 && shortenTargetSec === 0.3
+                      ? 'bg-cyan-500/20 border-cyan-400 text-cyan-200'
+                      : 'bg-[#0c0e14] border-slate-800 hover:border-slate-700 text-slate-300'
+                  }`}
+                >
+                  <div className="text-xs font-bold">舒緩語速</div>
+                  <div className="text-[10px] text-slate-400 mt-0.5">&ge;0.6s 縮為 0.30s</div>
+                </button>
+              </div>
+            </div>
+
+            {/* Parameter Inputs */}
+            <div className="grid grid-cols-2 gap-3 bg-[#0c0e14] p-3.5 rounded-xl border border-slate-800">
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">氣口長度門檻 (&ge; 秒)</label>
+                <input
+                  type="number"
+                  step={0.05}
+                  min={0.1}
+                  max={5.0}
+                  value={shortenMinSec}
+                  onChange={(e) => setShortenMinSec(Math.max(0.1, parseFloat(e.target.value) || 0.1))}
+                  className="w-full bg-[#151925] border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm font-mono text-cyan-300 focus:outline-none focus:border-cyan-400"
+                />
+              </div>
+              <div>
+                <label className="text-[11px] text-slate-400 block mb-1">縮短後保留長度 (秒)</label>
+                <input
+                  type="number"
+                  step={0.05}
+                  min={0.05}
+                  max={shortenMinSec}
+                  value={shortenTargetSec}
+                  onChange={(e) => setShortenTargetSec(Math.max(0.05, parseFloat(e.target.value) || 0.05))}
+                  className="w-full bg-[#151925] border border-slate-700 rounded-lg px-2.5 py-1.5 text-sm font-mono text-cyan-300 focus:outline-none focus:border-cyan-400"
+                />
+              </div>
+            </div>
+
+            {/* Impact Calculation Preview */}
+            {(() => {
+              let matchCount = 0
+              let estSaved = 0
+              segments.forEach((seg) => {
+                seg.tokens.forEach((tok) => {
+                  if (tok.type === 'silence') {
+                    const gap = tok.end - tok.start
+                    if (gap >= shortenMinSec - 1e-4 && shortenTargetSec < gap) {
+                      matchCount++
+                      estSaved += gap - shortenTargetSec
+                    }
+                  }
+                })
+              })
+              return (
+                <div className="p-3 rounded-xl bg-cyan-950/30 border border-cyan-500/30 text-xs flex items-center justify-between">
+                  <span className="text-slate-300">
+                    預計將處理 <strong className="text-cyan-300 font-mono text-sm">{matchCount}</strong> 處氣口
+                  </span>
+                  <span className="text-emerald-400 font-mono font-semibold">
+                    預估節省 ~{estSaved.toFixed(1)}s
+                  </span>
+                </div>
+              )
+            })()}
+
+            {/* Action Buttons */}
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowShortenModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => handleBatchShortenSilences(shortenMinSec, shortenTargetSec)}
+                className="px-5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-md shadow-cyan-500/20 transition flex items-center gap-1.5"
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>套用氣口縮短</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PHASE 1: FILLER WORDS REMOVAL MODAL */}
+      {showFillerModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-6 z-50">
+          <div className="bg-[#151925] border border-indigo-500/30 rounded-2xl max-w-xl w-full p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-indigo-500/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
+                  <Sparkles className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">贅字與口頭禪清理</h3>
+                  <p className="text-[11px] text-slate-400">
+                    自動辨識並標記文稿中的贅字助詞，可一鍵選取或直接批量剪除
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowFillerModal(false)}
+                className="p-1 rounded-lg hover:bg-slate-800 text-slate-400"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Custom Filler Words Input */}
+            <div className="space-y-1.5">
+              <label className="text-xs text-slate-300 font-medium">新增自訂贅字詞彙</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={customFillerInput}
+                  onChange={(e) => setCustomFillerInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      const val = customFillerInput.trim()
+                      if (val && !customFillerTerms.includes(val)) {
+                        setCustomFillerTerms((prev) => [...prev, val])
+                        setCheckedFillerWords((prev) => new Set([...prev, val]))
+                        setCustomFillerInput('')
+                      }
+                    }
+                  }}
+                  placeholder="輸入口頭禪 (如：基本上、你知道、坦白說)，按 Enter 新增..."
+                  className="flex-1 bg-[#0c0e14] border border-slate-700 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-400"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const val = customFillerInput.trim()
+                    if (val && !customFillerTerms.includes(val)) {
+                      setCustomFillerTerms((prev) => [...prev, val])
+                      setCheckedFillerWords((prev) => new Set([...prev, val]))
+                      setCustomFillerInput('')
+                    }
+                  }}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-medium transition"
+                >
+                  新增
+                </button>
+              </div>
+              {customFillerTerms.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 pt-1">
+                  {customFillerTerms.map((term) => (
+                    <span
+                      key={term}
+                      className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-indigo-500/15 border border-indigo-500/30 text-indigo-300 text-xs"
+                    >
+                      <span>{term}</span>
+                      <button
+                        onClick={() => {
+                          setCustomFillerTerms((prev) => prev.filter((t) => t !== term))
+                          setCheckedFillerWords((prev) => {
+                            const next = new Set(prev)
+                            next.delete(term)
+                            return next
+                          })
+                        }}
+                        className="hover:text-rose-400"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Detected Filler Checklist */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between text-xs">
+                <span className="text-slate-400">
+                  文稿中已偵測到 ({detectedFillerList.reduce((acc, f) => acc + f.count, 0)} 處)：
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCheckedFillerWords(new Set(detectedFillerList.map((f) => f.term)))
+                    }}
+                    className="text-[11px] text-indigo-400 hover:underline"
+                  >
+                    全選
+                  </button>
+                  <span className="text-slate-600">|</span>
+                  <button
+                    type="button"
+                    onClick={() => setCheckedFillerWords(new Set())}
+                    className="text-[11px] text-slate-400 hover:underline"
+                  >
+                    清除勾選
+                  </button>
+                </div>
+              </div>
+
+              <div className="max-h-48 overflow-y-auto transcript-scroller bg-[#0c0e14] p-2.5 rounded-xl border border-slate-800 space-y-1">
+                {detectedFillerList.length === 0 ? (
+                  <div className="text-xs text-slate-500 py-4 text-center">
+                    目前文稿中未偵測到明顯贅字或口頭助詞
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {detectedFillerList.map((item) => {
+                      const isChecked = checkedFillerWords.has(item.term)
+                      return (
+                        <label
+                          key={item.term}
+                          className={`flex items-center justify-between px-2.5 py-1.5 rounded-lg border text-xs cursor-pointer transition select-none ${
+                            isChecked
+                              ? 'bg-indigo-950/40 border-indigo-500/50 text-indigo-200'
+                              : 'bg-[#151925]/60 border-slate-800 hover:border-slate-700 text-slate-400'
+                          }`}
+                        >
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={(e) => {
+                                setCheckedFillerWords((prev) => {
+                                  const next = new Set(prev)
+                                  if (e.target.checked) next.add(item.term)
+                                  else next.delete(item.term)
+                                  return next
+                                })
+                              }}
+                              className="rounded border-slate-700 text-indigo-600 focus:ring-0"
+                            />
+                            <span className="font-semibold text-white">「{item.term}」</span>
+                          </div>
+                          <span className="font-mono text-[11px] text-indigo-400">
+                            {item.count} 次
+                          </span>
+                        </label>
+                      )
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setShowFillerModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition"
+              >
+                取消
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={handleSelectFillerWords}
+                  className="px-3.5 py-2 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-200 border border-indigo-500/40 text-xs font-semibold transition"
+                >
+                  僅標記選取
+                </button>
+                <button
+                  type="button"
+                  onClick={handleDeleteFillerWords}
+                  className="px-4 py-2 rounded-xl bg-rose-500 hover:bg-rose-400 text-white font-bold text-xs shadow-md shadow-rose-500/20 transition flex items-center gap-1.5"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>一鍵剪除所選贅字</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* PHASE 2: MULTI-TOKEN PHRASE EDIT MODAL */}
+      {showPhraseModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-6 z-50">
+          <div className="bg-[#151925] border border-cyan-500/30 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/20 border border-cyan-500/40 flex items-center justify-center text-cyan-400">
+                  <Edit3 className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white">多字連選改詞</h3>
+                  <p className="text-[11px] text-slate-400">
+                    重新輸入詞彙，系統將自動依字數均分重算字級時間軸
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowPhraseModal(false)}
+                className="p-1 rounded-lg hover:bg-slate-800 text-slate-400"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Current Selection Info */}
+            {(() => {
+              const selItems = flatTokens.filter((item) => selectedTokenIds.has(item.token.id))
+              const origText = selItems.map((it) => it.token.text).join('')
+              const startT = selItems[0]?.token.start ?? 0
+              const endT = selItems[selItems.length - 1]?.token.end ?? 0
+              return (
+                <div className="bg-[#0c0e14] p-3 rounded-xl border border-slate-800 text-xs space-y-1">
+                  <div className="flex items-center justify-between text-slate-400">
+                    <span>原文字段：</span>
+                    <span className="font-mono text-cyan-400">
+                      {startT.toFixed(2)}s ~ {endT.toFixed(2)}s (共 {(endT - startT).toFixed(2)}s)
+                    </span>
+                  </div>
+                  <div className="text-sm font-semibold text-white bg-slate-900/80 px-2.5 py-1 rounded border border-slate-800">
+                    {origText || '(未選取)'}
+                  </div>
+                </div>
+              )
+            })()}
+
+            {/* Input */}
+            <div>
+              <label className="text-xs text-slate-300 font-medium block mb-1.5">
+                輸入新詞彙
+              </label>
+              <input
+                type="text"
+                autoFocus
+                value={phraseInput}
+                onChange={(e) => setPhraseInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    handleCommitPhraseEdit(phraseInput)
+                  } else if (e.key === 'Escape') {
+                    e.preventDefault()
+                    setShowPhraseModal(false)
+                  }
+                }}
+                placeholder="輸入修正後的新詞..."
+                className="w-full bg-[#0c0e14] border border-slate-700 focus:border-cyan-400 rounded-xl px-3 py-2 text-sm text-white focus:outline-none"
+              />
+            </div>
+
+            {/* Actions */}
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setShowPhraseModal(false)}
+                className="px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-medium transition"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={() => handleCommitPhraseEdit(phraseInput)}
+                className="px-5 py-2 rounded-xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs shadow-md shadow-cyan-500/20 transition flex items-center gap-1.5"
+              >
+                <Check className="w-3.5 h-3.5 stroke-[3]" />
+                <span>確認修改 (Enter)</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* KEYBOARD SHORTCUTS MODAL */}
       {showShortcutsModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-6 z-50">
@@ -2104,6 +3261,18 @@ export default function App() {
               </button>
             </div>
             <div className="space-y-2.5 text-xs">
+              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
+                <span className="text-slate-300">關鍵字搜尋與批量取代</span>
+                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
+                  ⌘F / Ctrl+F
+                </kbd>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
+                <span className="text-slate-300">多字連選直接改詞</span>
+                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
+                  E
+                </kbd>
+              </div>
               <div className="flex justify-between py-1.5 border-b border-slate-800/70">
                 <span className="text-slate-300">文字游標連續往左剪除 (Word 模式)</span>
                 <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">

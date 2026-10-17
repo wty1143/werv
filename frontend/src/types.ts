@@ -7,6 +7,7 @@ export interface Token {
   start: number
   end: number
   deleted: boolean
+  keep_duration?: number | null
 }
 
 export interface Segment {

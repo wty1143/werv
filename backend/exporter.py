@@ -38,7 +38,32 @@ def compute_keep_ranges(
 
     for tok in flat_tokens:
         if not tok.deleted:
-            current_block.append(tok)
+            if (
+                tok.type == "silence"
+                and tok.keep_duration is not None
+                and tok.keep_duration > 0
+                and tok.keep_duration < (tok.end - tok.start)
+            ):
+                sub_end = round(tok.start + tok.keep_duration, 3)
+                current_block.append(
+                    Token(
+                        id=tok.id,
+                        type=tok.type,
+                        text=tok.text,
+                        start=tok.start,
+                        end=sub_end,
+                        deleted=False,
+                        keep_duration=tok.keep_duration,
+                    )
+                )
+                blocks.append(current_block)
+                current_block = []
+            elif tok.type == "silence" and tok.keep_duration == 0:
+                if current_block:
+                    blocks.append(current_block)
+                    current_block = []
+            else:
+                current_block.append(tok)
         else:
             if current_block:
                 blocks.append(current_block)
@@ -52,7 +77,11 @@ def compute_keep_ranges(
     raw_intervals: List[List[float]] = []
     for b in blocks:
         s = max(0.0, b[0].start - pre_pad)
-        e = b[-1].end + post_pad
+        last_tok = b[-1]
+        if last_tok.type == "silence" and last_tok.keep_duration is not None:
+            e = last_tok.end
+        else:
+            e = last_tok.end + post_pad
         if total_duration is not None and total_duration > 0:
             e = min(total_duration, e)
         if e > s:

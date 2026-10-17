@@ -9,6 +9,7 @@ class Token(BaseModel):
     start: float
     end: float
     deleted: bool = False
+    keep_duration: Optional[float] = None
 
 
 class Segment(BaseModel):

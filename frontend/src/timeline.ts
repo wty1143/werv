@@ -33,7 +33,24 @@ export function computeKeepRanges(
 
   for (const tok of flatTokens) {
     if (!tok.deleted) {
-      currentBlock.push(tok)
+      if (
+        tok.type === 'silence' &&
+        tok.keep_duration != null &&
+        tok.keep_duration > 0 &&
+        tok.keep_duration < tok.end - tok.start
+      ) {
+        const subEnd = Number((tok.start + tok.keep_duration).toFixed(3))
+        currentBlock.push({ ...tok, end: subEnd })
+        blocks.push(currentBlock)
+        currentBlock = []
+      } else if (tok.type === 'silence' && tok.keep_duration === 0) {
+        if (currentBlock.length > 0) {
+          blocks.push(currentBlock)
+          currentBlock = []
+        }
+      } else {
+        currentBlock.push(tok)
+      }
     } else {
       if (currentBlock.length > 0) {
         blocks.push(currentBlock)
@@ -50,7 +67,11 @@ export function computeKeepRanges(
   const raw: [number, number][] = []
   for (const b of blocks) {
     const s = Math.max(0, b[0].start - prePadding)
-    let e = b[b.length - 1].end + postPadding
+    const lastTok = b[b.length - 1]
+    let e =
+      lastTok.type === 'silence' && lastTok.keep_duration != null
+        ? lastTok.end
+        : lastTok.end + postPadding
     if (totalDuration && totalDuration > 0) {
       e = Math.min(totalDuration, e)
     }
@@ -210,6 +231,7 @@ export function rebuildSilenceTokensClient(
   totalDuration?: number
 ): Segment[] {
   const deletedSilenceMap = new Map<string, boolean>()
+  const keepDurationMap = new Map<string, number | null>()
   const wordRows: { segId: string; words: Token[] }[] = []
 
   for (const seg of segments) {
@@ -218,6 +240,9 @@ export function rebuildSilenceTokensClient(
       if (tok.type === 'silence') {
         const key = `${Math.round(tok.start * 20)}_${Math.round(tok.end * 20)}`
         deletedSilenceMap.set(key, tok.deleted)
+        if (tok.keep_duration !== undefined) {
+          keepDurationMap.set(key, tok.keep_duration)
+        }
       } else {
         words.push({ ...tok })
       }
@@ -234,6 +259,18 @@ export function rebuildSilenceTokensClient(
     return deletedSilenceMap.get(key) ?? false
   }
 
+  const getKeepDuration = (s: number, e: number): number | null => {
+    const key = `${Math.round(s * 20)}_${Math.round(e * 20)}`
+    return keepDurationMap.get(key) ?? null
+  }
+
+  const formatSilenceLabel = (gap: number, keepDur: number | null): string => {
+    if (keepDur != null && keepDur > 0 && keepDur < gap) {
+      return `[··· ${gap.toFixed(1)}s ➔ ${keepDur.toFixed(1)}s]`
+    }
+    return `[··· ${gap.toFixed(1)}s]`
+  }
+
   const out: Segment[] = []
   let prevWordEnd: number | null = null
 
@@ -245,13 +282,15 @@ export function rebuildSilenceTokensClient(
       const sStart = 0
       const sEnd = Number(words[0].start.toFixed(3))
       const gap = Number((sEnd - sStart).toFixed(3))
+      const kDur = getKeepDuration(sStart, sEnd)
       tokens.push({
         id: makeUid('sil'),
         type: 'silence',
-        text: `[··· ${gap.toFixed(1)}s]`,
+        text: formatSilenceLabel(gap, kDur),
         start: sStart,
         end: sEnd,
         deleted: isDeleted(sStart, sEnd),
+        keep_duration: kDur,
       })
     }
 
@@ -260,13 +299,15 @@ export function rebuildSilenceTokensClient(
       if (wIdx > 0 && prevWordEnd !== null) {
         const gap = Number((w.start - prevWordEnd).toFixed(3))
         if (gap >= silenceThreshold) {
+          const kDur = getKeepDuration(prevWordEnd, w.start)
           tokens.push({
             id: makeUid('sil'),
             type: 'silence',
-            text: `[··· ${gap.toFixed(1)}s]`,
+            text: formatSilenceLabel(gap, kDur),
             start: prevWordEnd,
             end: w.start,
             deleted: isDeleted(prevWordEnd, w.start),
+            keep_duration: kDur,
           })
         }
       }
@@ -279,13 +320,15 @@ export function rebuildSilenceTokensClient(
       if (prevWordEnd !== null) {
         const gap = Number((nextStart - prevWordEnd).toFixed(3))
         if (gap >= silenceThreshold) {
+          const kDur = getKeepDuration(prevWordEnd, nextStart)
           tokens.push({
             id: makeUid('sil'),
             type: 'silence',
-            text: `[··· ${gap.toFixed(1)}s]`,
+            text: formatSilenceLabel(gap, kDur),
             start: prevWordEnd,
             end: nextStart,
             deleted: isDeleted(prevWordEnd, nextStart),
+            keep_duration: kDur,
           })
         }
       }
@@ -293,13 +336,15 @@ export function rebuildSilenceTokensClient(
       const gap = Number((totalDuration - prevWordEnd).toFixed(3))
       if (gap >= silenceThreshold) {
         const endVal = Number(totalDuration.toFixed(3))
+        const kDur = getKeepDuration(prevWordEnd, endVal)
         tokens.push({
           id: makeUid('sil'),
           type: 'silence',
-          text: `[··· ${gap.toFixed(1)}s]`,
+          text: formatSilenceLabel(gap, kDur),
           start: prevWordEnd,
           end: endVal,
           deleted: isDeleted(prevWordEnd, endVal),
+          keep_duration: kDur,
         })
       }
     }
