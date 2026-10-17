@@ -77,6 +77,9 @@ export default function App() {
   const [isDraggingSelect, setIsDraggingSelect] = useState<boolean>(false)
   const [editingTokenId, setEditingTokenId] = useState<string | null>(null)
   const [editingText, setEditingText] = useState<string>('')
+  // Word-style caret states
+  const [cursorTokenId, setCursorTokenId] = useState<string | null>(null)
+  const [isAtRowStart, setIsAtRowStart] = useState<boolean>(false)
 
   // Playback & Virtual Timeline State
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -112,6 +115,20 @@ export default function App() {
     })
     return list
   }, [segments])
+
+  // Resolve current cursor flat index
+  const cursorFlatIndex = useMemo(() => {
+    if (!cursorTokenId) return null
+    const idx = flatTokens.findIndex((item) => item.token.id === cursorTokenId)
+    return idx !== -1 ? idx : null
+  }, [flatTokens, cursorTokenId])
+
+  const scrollTokenIntoView = useCallback((tokId: string) => {
+    const el = document.getElementById(`tok-${tokId}`)
+    if (el) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'nearest' })
+    }
+  }, [])
 
   // Module C: Compute merged keep_ranges in real time
   const keepRanges = useMemo(() => {
@@ -251,6 +268,8 @@ export default function App() {
       setUndoStack([])
       setRedoStack([])
       setSelectedTokenIds(new Set())
+      setCursorTokenId(null)
+      setIsAtRowStart(false)
       setSilenceThreshold(data.silence_threshold || 0.4)
       setBatchSilenceMin(data.silence_threshold || 0.4)
       setExportResult(null)
@@ -329,6 +348,8 @@ export default function App() {
       setUndoStack([])
       setRedoStack([])
       setSelectedTokenIds(new Set())
+      setCursorTokenId(null)
+      setIsAtRowStart(false)
       setShowAsrSettings(false)
       setStatusMessage(
         `語音辨識完成！共產生 ${data.segments.length} 列台灣繁中字幕與氣口標記`
@@ -389,6 +410,7 @@ export default function App() {
 
       const nextSegments: Segment[] = []
       let didSplit = false
+      let newSplitTokenId: string | null = null
 
       for (const seg of segments) {
         const idx = seg.tokens.findIndex((t) => t.id === tokId)
@@ -409,14 +431,24 @@ export default function App() {
         nextSegments.push({ id: seg.id, tokens: firstHalf })
         nextSegments.push({ id: makeUid('seg'), tokens: secondHalf })
         didSplit = true
+        if (secondHalf.length > 0) {
+          newSplitTokenId = secondHalf[0].id
+        }
       }
 
       if (didSplit) {
         commitSegments(nextSegments)
+        if (newSplitTokenId) {
+          setCursorTokenId(newSplitTokenId)
+          setSelectedTokenIds(new Set([newSplitTokenId]))
+          setAnchorTokenId(newSplitTokenId)
+          setIsAtRowStart(true)
+          scrollTokenIntoView(newSplitTokenId)
+        }
         setStatusMessage('已將字幕列拆分為兩列 (Enter)')
       }
     },
-    [selectedTokenIds, segments, commitSegments]
+    [selectedTokenIds, segments, commitSegments, scrollTokenIntoView]
   )
 
   // Merge segment with previous segment (在列首按 Backspace 可與上一列合併)
@@ -426,12 +458,21 @@ export default function App() {
       const nextSegments = cloneSegments(segments)
       const prevSeg = nextSegments[segIndex - 1]
       const currSeg = nextSegments[segIndex]
+      const junctionToken =
+        prevSeg.tokens.length > 0 ? prevSeg.tokens[prevSeg.tokens.length - 1] : null
       prevSeg.tokens = [...prevSeg.tokens, ...currSeg.tokens]
       nextSegments.splice(segIndex, 1)
       commitSegments(nextSegments)
+      if (junctionToken) {
+        setCursorTokenId(junctionToken.id)
+        setSelectedTokenIds(new Set([junctionToken.id]))
+        setAnchorTokenId(junctionToken.id)
+        setIsAtRowStart(false)
+        scrollTokenIntoView(junctionToken.id)
+      }
       setStatusMessage(`已將第 ${segIndex + 1} 列合併至上一列`)
     },
-    [segments, commitSegments]
+    [segments, commitSegments, scrollTokenIntoView]
   )
 
   // Batch Silence Operations (一鍵選取/刪除所有 >= X 秒的氣口)
@@ -523,6 +564,10 @@ export default function App() {
       return
     }
 
+    // Set cursor position to clicked token
+    setCursorTokenId(tok.id)
+    setIsAtRowStart(false)
+
     if (e.shiftKey && anchorTokenId) {
       const anchorIdx = flatTokens.findIndex((item) => item.token.id === anchorTokenId)
       if (anchorIdx !== -1) {
@@ -564,6 +609,10 @@ export default function App() {
       rangeIds.add(flatTokens[i].token.id)
     }
     setSelectedTokenIds(rangeIds)
+    if (flatTokens[flatIdx]) {
+      setCursorTokenId(flatTokens[flatIdx].token.id)
+      setIsAtRowStart(false)
+    }
   }
 
   useEffect(() => {
@@ -572,7 +621,175 @@ export default function App() {
     return () => window.removeEventListener('mouseup', handleMouseUp)
   }, [])
 
-  // Global Keyboard Shortcuts (Module B)
+  // Word-Style Backspace: Continuous backward deletion & row merge at start
+  const handleWordStyleBackspace = useCallback(() => {
+    if (flatTokens.length === 0) return
+
+    // 1. Multi-token range selection: delete all selected tokens
+    if (selectedTokenIds.size > 1) {
+      const selectedIndices: number[] = []
+      flatTokens.forEach((item, idx) => {
+        if (selectedTokenIds.has(item.token.id)) {
+          selectedIndices.push(idx)
+        }
+      })
+      if (selectedIndices.length === 0) return
+
+      const minIdx = Math.min(...selectedIndices)
+      const count = selectedTokenIds.size
+
+      // Mark all selected as deleted = true
+      const nextSegments = segments.map((seg) => ({
+        ...seg,
+        tokens: seg.tokens.map((tok) =>
+          selectedTokenIds.has(tok.id) ? { ...tok, deleted: true } : tok
+        ),
+      }))
+      commitSegments(nextSegments)
+
+      // Move cursor right before the deleted block
+      const targetIdx = Math.max(0, minIdx - 1)
+      if (flatTokens[targetIdx]) {
+        const targetTok = flatTokens[targetIdx].token
+        setCursorTokenId(targetTok.id)
+        setSelectedTokenIds(new Set([targetTok.id]))
+        setAnchorTokenId(targetTok.id)
+        setIsAtRowStart(minIdx === 0)
+        scrollTokenIntoView(targetTok.id)
+        if (videoRef.current) {
+          videoRef.current.currentTime = targetTok.start
+          setCurrentTime(targetTok.start)
+        }
+      } else {
+        setSelectedTokenIds(new Set())
+        setCursorTokenId(null)
+      }
+      setStatusMessage(`已剪除選取的 ${count} 個字元/氣口`)
+      return
+    }
+
+    // 2. Single token cursor mode:
+    let currIdx = cursorFlatIndex
+    if (currIdx === null || currIdx < 0 || currIdx >= flatTokens.length) {
+      if (selectedTokenIds.size === 1) {
+        const onlyId = Array.from(selectedTokenIds)[0]
+        const foundIdx = flatTokens.findIndex((item) => item.token.id === onlyId)
+        if (foundIdx !== -1) currIdx = foundIdx
+      }
+    }
+
+    if (currIdx === null || currIdx < 0 || currIdx >= flatTokens.length) return
+    const currentItem = flatTokens[currIdx]
+
+    // Case A: Cursor is at row start (left border of first token) -> Merge with previous row
+    if (isAtRowStart) {
+      if (currentItem.segIndex > 0) {
+        handleMergeWithPreviousSegment(currentItem.segIndex)
+      }
+      return
+    }
+
+    // Case B: Cursor at currentItem -> mark deleted = true (continuous delete, no toggling!)
+    const targetTokenId = currentItem.token.id
+    const nextSegments = segments.map((seg) => ({
+      ...seg,
+      tokens: seg.tokens.map((tok) =>
+        tok.id === targetTokenId ? { ...tok, deleted: true } : tok
+      ),
+    }))
+    commitSegments(nextSegments)
+
+    if (currentItem.tokIndex > 0) {
+      // Step cursor left to previous token in this row
+      const nextIdx = currIdx - 1
+      const prevTok = flatTokens[nextIdx].token
+      setCursorTokenId(prevTok.id)
+      setIsAtRowStart(false)
+      setSelectedTokenIds(new Set([prevTok.id]))
+      setAnchorTokenId(prevTok.id)
+      scrollTokenIntoView(prevTok.id)
+      if (videoRef.current) {
+        videoRef.current.currentTime = prevTok.start
+        setCurrentTime(prevTok.start)
+      }
+    } else {
+      // Deleted token 0 of this row -> Caret moves to left border (row start)
+      setIsAtRowStart(true)
+      setCursorTokenId(targetTokenId)
+      setSelectedTokenIds(new Set([targetTokenId]))
+      setAnchorTokenId(targetTokenId)
+    }
+
+    setStatusMessage(`已剪除「${currentItem.token.text}」，游標往左推進`)
+  }, [
+    flatTokens,
+    selectedTokenIds,
+    cursorFlatIndex,
+    isAtRowStart,
+    segments,
+    commitSegments,
+    handleMergeWithPreviousSegment,
+    scrollTokenIntoView,
+  ])
+
+  // Word-Style Forward Delete (Delete key)
+  const handleWordStyleForwardDelete = useCallback(() => {
+    if (flatTokens.length === 0) return
+
+    if (selectedTokenIds.size > 1) {
+      handleWordStyleBackspace()
+      return
+    }
+
+    let currIdx = cursorFlatIndex
+    if (currIdx === null || currIdx < 0 || currIdx >= flatTokens.length) {
+      if (selectedTokenIds.size === 1) {
+        const onlyId = Array.from(selectedTokenIds)[0]
+        const foundIdx = flatTokens.findIndex((item) => item.token.id === onlyId)
+        if (foundIdx !== -1) currIdx = foundIdx
+      }
+    }
+
+    if (currIdx === null || currIdx < 0 || currIdx >= flatTokens.length) return
+
+    if (isAtRowStart) {
+      // Forward delete deletes the token directly ahead of cursor (which is token 0)
+      const targetTokenId = flatTokens[currIdx].token.id
+      const nextSegments = segments.map((seg) => ({
+        ...seg,
+        tokens: seg.tokens.map((tok) =>
+          tok.id === targetTokenId ? { ...tok, deleted: true } : tok
+        ),
+      }))
+      commitSegments(nextSegments)
+      setIsAtRowStart(false)
+      setStatusMessage(`已向後剪除「${flatTokens[currIdx].token.text}」`)
+      return
+    }
+
+    // Forward delete deletes the token to the right of cursor
+    if (currIdx + 1 < flatTokens.length) {
+      const nextTok = flatTokens[currIdx + 1].token
+      const nextSegments = segments.map((seg) => ({
+        ...seg,
+        tokens: seg.tokens.map((tok) =>
+          tok.id === nextTok.id ? { ...tok, deleted: true } : tok
+        ),
+      }))
+      commitSegments(nextSegments)
+      setStatusMessage(`已向後剪除「${nextTok.text}」`)
+    }
+  }, [
+    flatTokens,
+    selectedTokenIds,
+    cursorFlatIndex,
+    isAtRowStart,
+    segments,
+    commitSegments,
+    handleWordStyleBackspace,
+  ])
+
+  // Global Keyboard Shortcuts (Module B + Word-Style Caret Navigation)
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       // Ignore shortcuts when typing in an input or textarea
@@ -594,34 +811,204 @@ export default function App() {
         return
       }
 
-      // Enter: Split subtitle row at selected token
-      if (e.key === 'Enter' && selectedTokenIds.size === 1) {
+      // Enter: Split subtitle row at cursor or selected token
+      if (e.key === 'Enter') {
         e.preventDefault()
-        handleSplitSegmentAtToken()
+        let targetId: string | null = null
+        if (cursorFlatIndex !== null && flatTokens[cursorFlatIndex]) {
+          targetId = flatTokens[cursorFlatIndex].token.id
+        } else if (selectedTokenIds.size === 1) {
+          targetId = Array.from(selectedTokenIds)[0]
+        }
+        if (targetId) {
+          handleSplitSegmentAtToken(targetId)
+        }
         return
       }
 
-      // Backspace at first token of a row -> Merge with previous row; otherwise toggle deleted
-      if (e.key === 'Backspace' || e.key === 'Delete') {
+      // Backspace: Word-style continuous backward deletion & row merge at start
+      if (e.key === 'Backspace') {
         e.preventDefault()
-        if (e.key === 'Backspace' && selectedTokenIds.size === 1) {
-          const onlyId = Array.from(selectedTokenIds)[0]
-          const found = flatTokens.find((item) => item.token.id === onlyId)
-          if (found && found.tokIndex === 0 && found.segIndex > 0) {
-            handleMergeWithPreviousSegment(found.segIndex)
-            return
+        handleWordStyleBackspace()
+        return
+      }
+
+      // Delete key: Forward Delete
+      if (e.key === 'Delete') {
+        e.preventDefault()
+        handleWordStyleForwardDelete()
+        return
+      }
+
+      // ArrowLeft: Navigate left
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault()
+        if (flatTokens.length === 0) return
+        const currIdx = cursorFlatIndex ?? 0
+        if (e.shiftKey) {
+          const newIdx = Math.max(0, currIdx - 1)
+          const targetTok = flatTokens[newIdx]?.token
+          if (targetTok) {
+            setCursorTokenId(targetTok.id)
+            setIsAtRowStart(false)
+            const anchorIdx = anchorTokenId
+              ? flatTokens.findIndex((it) => it.token.id === anchorTokenId)
+              : currIdx
+            const sIdx = Math.min(anchorIdx, newIdx)
+            const eIdx = Math.max(anchorIdx, newIdx)
+            const rangeIds = new Set<string>()
+            for (let i = sIdx; i <= eIdx; i++) {
+              rangeIds.add(flatTokens[i].token.id)
+            }
+            setSelectedTokenIds(rangeIds)
+            scrollTokenIntoView(targetTok.id)
+            if (videoRef.current) {
+              videoRef.current.currentTime = targetTok.start
+              setCurrentTime(targetTok.start)
+            }
+          }
+          return
+        }
+
+        if (isAtRowStart) {
+          if (currIdx > 0) {
+            const prevIdx = currIdx - 1
+            const prevTok = flatTokens[prevIdx].token
+            setCursorTokenId(prevTok.id)
+            setIsAtRowStart(false)
+            setSelectedTokenIds(new Set([prevTok.id]))
+            setAnchorTokenId(prevTok.id)
+            scrollTokenIntoView(prevTok.id)
+            if (videoRef.current) {
+              videoRef.current.currentTime = prevTok.start
+              setCurrentTime(prevTok.start)
+            }
+          }
+          return
+        }
+
+        const currentItem = flatTokens[currIdx]
+        if (currentItem && currentItem.tokIndex === 0) {
+          setIsAtRowStart(true)
+        } else if (currIdx > 0) {
+          const prevIdx = currIdx - 1
+          const prevTok = flatTokens[prevIdx].token
+          setCursorTokenId(prevTok.id)
+          setIsAtRowStart(false)
+          setSelectedTokenIds(new Set([prevTok.id]))
+          setAnchorTokenId(prevTok.id)
+          scrollTokenIntoView(prevTok.id)
+          if (videoRef.current) {
+            videoRef.current.currentTime = prevTok.start
+            setCurrentTime(prevTok.start)
           }
         }
-        if (selectedTokenIds.size > 0) {
-          toggleSelectedDeleted()
+        return
+      }
+
+      // ArrowRight: Navigate right
+      if (e.key === 'ArrowRight') {
+        e.preventDefault()
+        if (flatTokens.length === 0) return
+        const currIdx = cursorFlatIndex ?? 0
+        if (e.shiftKey) {
+          const newIdx = Math.min(flatTokens.length - 1, currIdx + 1)
+          const targetTok = flatTokens[newIdx]?.token
+          if (targetTok) {
+            setCursorTokenId(targetTok.id)
+            setIsAtRowStart(false)
+            const anchorIdx = anchorTokenId
+              ? flatTokens.findIndex((it) => it.token.id === anchorTokenId)
+              : currIdx
+            const sIdx = Math.min(anchorIdx, newIdx)
+            const eIdx = Math.max(anchorIdx, newIdx)
+            const rangeIds = new Set<string>()
+            for (let i = sIdx; i <= eIdx; i++) {
+              rangeIds.add(flatTokens[i].token.id)
+            }
+            setSelectedTokenIds(rangeIds)
+            scrollTokenIntoView(targetTok.id)
+            if (videoRef.current) {
+              videoRef.current.currentTime = targetTok.start
+              setCurrentTime(targetTok.start)
+            }
+          }
+          return
+        }
+
+        if (isAtRowStart) {
+          setIsAtRowStart(false)
+          return
+        }
+
+        if (currIdx < flatTokens.length - 1) {
+          const nextIdx = currIdx + 1
+          const nextTok = flatTokens[nextIdx].token
+          setCursorTokenId(nextTok.id)
+          setIsAtRowStart(false)
+          setSelectedTokenIds(new Set([nextTok.id]))
+          setAnchorTokenId(nextTok.id)
+          scrollTokenIntoView(nextTok.id)
+          if (videoRef.current) {
+            videoRef.current.currentTime = nextTok.start
+            setCurrentTime(nextTok.start)
+          }
         }
         return
       }
 
-      // Space: If tokens are selected in Cut mode, toggle their deleted status; else toggle Play/Pause
+      // ArrowUp / ArrowDown: Row-to-row navigation
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        e.preventDefault()
+        if (flatTokens.length === 0) return
+        const currIdx = cursorFlatIndex ?? 0
+        const curr = flatTokens[currIdx]
+        if (!curr) return
+        const targetSegIdx = e.key === 'ArrowUp' ? curr.segIndex - 1 : curr.segIndex + 1
+        if (targetSegIdx >= 0 && targetSegIdx < segments.length) {
+          const targetSeg = segments[targetSegIdx]
+          if (targetSeg.tokens.length > 0) {
+            const targetTokIndex = Math.min(curr.tokIndex, targetSeg.tokens.length - 1)
+            const targetTok = targetSeg.tokens[targetTokIndex]
+            setCursorTokenId(targetTok.id)
+            setIsAtRowStart(false)
+            setSelectedTokenIds(new Set([targetTok.id]))
+            setAnchorTokenId(targetTok.id)
+            scrollTokenIntoView(targetTok.id)
+            if (videoRef.current) {
+              videoRef.current.currentTime = targetTok.start
+              setCurrentTime(targetTok.start)
+            }
+          }
+        }
+        return
+      }
+
+      // R key: Restore deleted token(s)
+      if (e.key.toLowerCase() === 'r' && !e.metaKey && !e.ctrlKey) {
+        e.preventDefault()
+        let targetIds = Array.from(selectedTokenIds)
+        if (targetIds.length === 0 && cursorTokenId) {
+          targetIds = [cursorTokenId]
+        }
+        if (targetIds.length > 0) {
+          const idSet = new Set(targetIds)
+          const nextSegments = segments.map((seg) => ({
+            ...seg,
+            tokens: seg.tokens.map((tok) =>
+              idSet.has(tok.id) ? { ...tok, deleted: false } : tok
+            ),
+          }))
+          commitSegments(nextSegments)
+          setStatusMessage(`已還原 ${targetIds.length} 個字元/氣口 (R)`)
+        }
+        return
+      }
+
+      // Space: Toggle Play/Pause when single cursor or no selection; toggle cut/restore if multiple selected
       if (e.key === ' ') {
         e.preventDefault()
-        if (selectedTokenIds.size > 0 && editorMode === 'cut') {
+        if (selectedTokenIds.size > 1 && editorMode === 'cut') {
           toggleSelectedDeleted()
         } else if (videoRef.current) {
           if (videoRef.current.paused) {
@@ -637,6 +1024,8 @@ export default function App() {
       // Escape: Clear token selection
       if (e.key === 'Escape') {
         setSelectedTokenIds(new Set())
+        setCursorTokenId(null)
+        setIsAtRowStart(false)
       }
     }
 
@@ -644,13 +1033,21 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [
     selectedTokenIds,
+    cursorTokenId,
+    cursorFlatIndex,
+    isAtRowStart,
+    anchorTokenId,
     editorMode,
     flatTokens,
+    segments,
     handleUndo,
     handleRedo,
     handleSplitSegmentAtToken,
-    handleMergeWithPreviousSegment,
+    handleWordStyleBackspace,
+    handleWordStyleForwardDelete,
     toggleSelectedDeleted,
+    commitSegments,
+    scrollTokenIntoView,
   ])
 
   // Currently active segment & token for video subtitle overlay
@@ -1459,14 +1856,17 @@ export default function App() {
                         )
                       }
 
+                      const isCaretHere = flatIdx === cursorFlatIndex
+
                       if (tok.type === 'silence') {
                         return (
                           <div
                             key={tok.id}
+                            id={`tok-${tok.id}`}
                             onMouseDown={(e) => handleTokenMouseDown(e, tok, flatIdx)}
                             onMouseEnter={() => handleTokenMouseEnter(flatIdx)}
                             title={`氣口區間：${tok.start.toFixed(2)}s - ${tok.end.toFixed(2)}s (點擊或按空白鍵剪除)`}
-                            className={`cursor-pointer px-2.5 py-1.5 rounded-lg text-xs font-mono font-medium border transition-all flex items-center gap-1 ${
+                            className={`cursor-pointer px-2.5 py-1.5 rounded-lg text-xs font-mono font-medium border transition-all flex items-center gap-1 relative ${
                               tok.deleted
                                 ? 'line-through opacity-35 bg-rose-950/25 border-rose-500/30 text-rose-300'
                                 : isSelected
@@ -1477,6 +1877,13 @@ export default function App() {
                             }`}
                           >
                             <span>{tok.text}</span>
+                            {isCaretHere && (
+                              <span
+                                className={`word-caret ${
+                                  isAtRowStart ? 'caret-left' : 'caret-right'
+                                }`}
+                              />
+                            )}
                           </div>
                         )
                       }
@@ -1485,6 +1892,7 @@ export default function App() {
                       return (
                         <div
                           key={tok.id}
+                          id={`tok-${tok.id}`}
                           onMouseDown={(e) => handleTokenMouseDown(e, tok, flatIdx)}
                           onMouseEnter={() => handleTokenMouseEnter(flatIdx)}
                           onDoubleClick={() => startEditingToken(tok)}
@@ -1500,6 +1908,13 @@ export default function App() {
                           }`}
                         >
                           <span>{tok.text}</span>
+                          {isCaretHere && (
+                            <span
+                              className={`word-caret ${
+                                isAtRowStart ? 'caret-left' : 'caret-right'
+                              }`}
+                            />
+                          )}
                         </div>
                       )
                     })}
@@ -1662,33 +2077,51 @@ export default function App() {
             </div>
             <div className="space-y-2.5 text-xs">
               <div className="flex justify-between py-1.5 border-b border-slate-800/70">
-                <span className="text-slate-300">剪除 / 還原選取的字或氣口</span>
+                <span className="text-slate-300">文字游標連續往左剪除 (Word 模式)</span>
                 <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
-                  Delete / Space
+                  Backspace
+                </kbd>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
+                <span className="text-slate-300">在列首與上一列字幕合併</span>
+                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
+                  列首 Backspace
+                </kbd>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
+                <span className="text-slate-300">向後剪除字元 (Forward Delete)</span>
+                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
+                  Delete
+                </kbd>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
+                <span className="text-slate-300">移動文字游標 (加 Shift 擴選)</span>
+                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
+                  ← → ↑ ↓
+                </kbd>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
+                <span className="text-slate-300">播放 / 暫停 (若多選則批量剪除)</span>
+                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
+                  Space
+                </kbd>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
+                <span className="text-slate-300">還原游標處或選取的字/氣口</span>
+                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
+                  R
+                </kbd>
+              </div>
+              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
+                <span className="text-slate-300">游標處斷行拆分為兩列</span>
+                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
+                  Enter
                 </kbd>
               </div>
               <div className="flex justify-between py-1.5 border-b border-slate-800/70">
                 <span className="text-slate-300">修正同音錯字（不剪掉畫面）</span>
                 <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
                   雙擊單字
-                </kbd>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
-                <span className="text-slate-300">將目前字幕列拆分為兩列</span>
-                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
-                  Enter
-                </kbd>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
-                <span className="text-slate-300">在列首與上一列字幕合併</span>
-                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
-                  列首按 Backspace
-                </kbd>
-              </div>
-              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
-                <span className="text-slate-300">連續範圍選取多個字/氣口</span>
-                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
-                  拖曳滑鼠 / Shift+點擊
                 </kbd>
               </div>
               <div className="flex justify-between py-1.5">

@@ -143,3 +143,34 @@ progress.loading-spinner:indeterminate {
     rgba(15, 17, 23, 0.4) 10px
   );
 }
+
+/* Word-style blinking insertion caret */
+.word-caret {
+  position: absolute;
+  top: 15%;
+  bottom: 15%;
+  width: 2.5px;
+  background-color: #22d3ee;
+  border-radius: 9999px;
+  box-shadow: 0 0 8px #22d3ee;
+  animation: word-caret-blink 1s ease-in-out infinite;
+  pointer-events: none;
+  z-index: 30;
+}
+
+.word-caret.caret-right {
+  right: -3px;
+}
+
+.word-caret.caret-left {
+  left: -3px;
+}
+
+@keyframes word-caret-blink {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
