@@ -24,12 +24,14 @@ def compute_keep_ranges(
     2. Pad each interval by `padding` (default 0.05s) on both ends.
     3. Merge overlapping intervals or adjacent intervals within `merge_gap` (default 0.08s).
     """
+    pre_padding = max(padding, 0.08)
+    post_padding = max(padding, 0.05)
     raw_intervals: List[List[float]] = []
     for seg in segments:
         for tok in seg.tokens:
             if not tok.deleted:
-                s = max(0.0, tok.start - padding)
-                e = tok.end + padding
+                s = max(0.0, tok.start - pre_padding)
+                e = tok.end + post_padding
                 if total_duration is not None and total_duration > 0:
                     e = min(total_duration, e)
                 if e > s:

@@ -14,13 +14,15 @@ export function computeKeepRanges(
   mergeGap = 0.08,
   totalDuration?: number
 ): KeepRange[] {
+  const prePadding = Math.max(padding, 0.08)
+  const postPadding = Math.max(padding, 0.05)
   const raw: [number, number][] = []
 
   for (const seg of segments) {
     for (const tok of seg.tokens) {
       if (!tok.deleted) {
-        const s = Math.max(0, tok.start - padding)
-        let e = tok.end + padding
+        const s = Math.max(0, tok.start - prePadding)
+        let e = tok.end + postPadding
         if (totalDuration && totalDuration > 0) {
           e = Math.min(totalDuration, e)
         }

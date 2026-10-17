@@ -194,13 +194,18 @@ export default function App() {
         setCurrentTime(nowTime)
 
         if (!vid.paused && virtualCutPreview && keepRanges.length > 0) {
+          // If browser is actively decoding from a previous seek (especially on 60/120fps video), do not re-seek!
+          if (vid.seeking) {
+            rafId = requestAnimationFrame(tick)
+            return
+          }
           const res = resolveVirtualPlayhead(nowTime, keepRanges)
           const nowPerf = performance.now()
-          if (res.action === 'seek' && nowPerf - lastSeekStamp > 45) {
+          if (res.action === 'seek' && nowPerf - lastSeekStamp > 100) {
             lastSeekStamp = nowPerf
             vid.currentTime = res.targetTime
             setCurrentTime(res.targetTime)
-          } else if (res.action === 'end' && nowPerf - lastSeekStamp > 80) {
+          } else if (res.action === 'end' && nowPerf - lastSeekStamp > 100) {
             lastSeekStamp = nowPerf
             vid.pause()
             vid.currentTime = res.targetTime

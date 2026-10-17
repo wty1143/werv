@@ -115,10 +115,10 @@ def run_silero_vad(wav_path: str) -> List[Dict[str, float]]:
         model,
         sampling_rate=sr,
         return_seconds=True,
-        threshold=0.35,
-        min_speech_duration_ms=80,
-        min_silence_duration_ms=120,
-        speech_pad_ms=25,
+        threshold=0.30,
+        min_speech_duration_ms=60,
+        min_silence_duration_ms=100,
+        speech_pad_ms=50,
     )
     return [{"start": float(item["start"]), "end": float(item["end"])} for item in speech_ts]
 
@@ -257,37 +257,54 @@ def calibrate_with_vad(
     vad_intervals: List[Dict[str, float]],
 ) -> List[List[Dict[str, Any]]]:
     """
-    Calibrate segment start/end and stretched word tails against silero-vad speech boundaries,
-    preventing Whisper from stretching final characters into trailing silence or starting too early.
+    Calibrate segment start/end and stretched word tails against silero-vad speech boundaries.
+    1. Forward protection: If Whisper's first token start lags behind real speech onset (vad_s < first.start),
+       pull first.start back to vad_s so the first consonant/syllable is NOT swallowed by silence.
+    2. Boundary clamping: If first.start starts too early into preceding long silence, snap to vad_s.
+    3. Tail protection: If last.end stops before vad_e, extend last.end to vad_e.
+    4. Tail clamping: If last.end drags into trailing silence, clamp to vad_e.
     """
     if not vad_intervals:
         return segments_units
 
-    for seg in segments_units:
+    prev_seg_end = 0.0
+    for seg_idx, seg in enumerate(segments_units):
         if not seg:
             continue
 
-        # 1. Calibrate first token start (avoid eating leading silence)
         first = seg[0]
-        overlapping_first = [
-            v for v in vad_intervals if v["end"] > first["start"] + 0.01 and v["start"] < first["end"] + 0.15
+        # Find any VAD speech interval covering or immediately preceding the first token
+        covering_first = [
+            v for v in vad_intervals if v["end"] >= first["start"] - 0.35 and v["start"] <= first["end"] + 0.15
         ]
-        if overlapping_first:
-            vad_s = overlapping_first[0]["start"]
-            if vad_s > first["start"] + 0.03 and vad_s < first["end"] - 0.04:
+        if covering_first:
+            target_vad = covering_first[0]
+            vad_s = target_vad["start"]
+            # Case A: Whisper lagged behind acoustic onset (vad_s < first["start"])
+            if vad_s < first["start"] and vad_s >= prev_seg_end:
+                first["start"] = round(vad_s, 3)
+            # Case B: Whisper started too early into leading silence (vad_s > first["start"] + 0.04)
+            elif vad_s > first["start"] + 0.04 and vad_s < first["end"] - 0.04:
                 first["start"] = round(vad_s, 3)
 
-        # 2. Calibrate last token end (avoid stretching tail into trailing silence)
+        # 2. Calibrate last token end
         last = seg[-1]
-        overlapping_last = [
-            v for v in vad_intervals if v["end"] > last["start"] - 0.10 and v["start"] < last["end"]
+        next_seg_start = (
+            segments_units[seg_idx + 1][0]["start"]
+            if seg_idx < len(segments_units) - 1 and segments_units[seg_idx + 1]
+            else 999999.0
+        )
+        covering_last = [
+            v for v in vad_intervals if v["end"] >= last["start"] and v["start"] <= last["end"] + 0.35
         ]
-        if overlapping_last:
-            # Find the VAD interval that covers the start/body of the last word
-            covering = [v for v in overlapping_last if v["start"] <= last["start"] + 0.15]
-            target_vad = covering[0] if covering else overlapping_last[-1]
+        if covering_last:
+            target_vad = covering_last[-1]
             vad_e = target_vad["end"]
-            if vad_e < last["end"] - 0.04 and vad_e > last["start"] + 0.05:
+            # Case A: Voice continued after Whisper's timestamp (vad_e > last["end"])
+            if vad_e > last["end"] and vad_e <= next_seg_start:
+                last["end"] = round(min(vad_e, last["end"] + 0.40), 3)
+            # Case B: Whisper dragged into trailing silence (vad_e < last["end"] - 0.04)
+            elif vad_e < last["end"] - 0.04 and vad_e > last["start"] + 0.05:
                 last["end"] = round(vad_e, 3)
 
         # 3. Calibrate any mid-segment token that stretched across an internal VAD pause
@@ -305,6 +322,8 @@ def calibrate_with_vad(
                     if tok["start"] + 0.06 <= vad_e < tok["end"] - 0.05 and vad_e <= next_start:
                         tok["end"] = round(vad_e, 3)
 
+        prev_seg_end = last["end"]
+
     return segments_units
 
 
@@ -317,10 +336,12 @@ def insert_silence_tokens(
     silence_threshold: float = 0.4,
     total_duration: Optional[float] = None,
     existing_deleted_map: Optional[Dict[Tuple[int, int], bool]] = None,
+    vad_intervals: Optional[List[Dict[str, float]]] = None,
 ) -> List[Segment]:
     """
-    Given word-only segments (or existing segments), compare adjacent word tokens
-    (next.start - prev.end) and insert 'silence' tokens whenever gap >= silence_threshold.
+    Given word-only segments, detect silence gaps between words.
+    Crucially uses VAD speech intervals (if available) to guarantee silence tokens NEVER
+    overlap with human voice, preventing the first words of the next sentence from being cut.
     """
     existing_deleted_map = existing_deleted_map or {}
 
@@ -333,20 +354,27 @@ def insert_silence_tokens(
     if not non_empty:
         return []
 
-    # Flatten word references to gently bridge sub-threshold gaps (< silence_threshold but > 0.14s)
-    # so that the Module C formula (0.05s pad * 2 + 0.08s merge = 0.18s) never creates unintended cuts
-    # when neither word is deleted and no silence token was inserted.
-    flat_words = [w for seg in non_empty for w in seg]
-    for idx in range(len(flat_words) - 1):
-        curr_w = flat_words[idx]
-        next_w = flat_words[idx + 1]
-        c_end = float(curr_w["end"])
-        n_start = float(next_w["start"])
-        gap = round(n_start - c_end, 3)
-        if 0.14 < gap < silence_threshold:
-            slack = gap - 0.12
-            curr_w["end"] = round(c_end + slack / 2.0, 3)
-            next_w["start"] = round(n_start - slack / 2.0, 3)
+    # If VAD intervals are provided, check gaps between words and pull next words earlier
+    # if VAD speech already began inside the candidate gap
+    if vad_intervals:
+        flat_words = [w for seg in non_empty for w in seg]
+        for idx in range(len(flat_words) - 1):
+            curr_w = flat_words[idx]
+            next_w = flat_words[idx + 1]
+            c_end = float(curr_w["end"])
+            n_start = float(next_w["start"])
+            if n_start > c_end:
+                # Find any speech starting inside this gap
+                speech_in_gap = [
+                    v for v in vad_intervals if v["end"] > c_end and v["start"] < n_start
+                ]
+                if speech_in_gap:
+                    last_speech = speech_in_gap[-1]
+                    if last_speech["start"] < n_start and last_speech["start"] >= c_end:
+                        next_w["start"] = round(last_speech["start"], 3)
+                    first_speech = speech_in_gap[0]
+                    if first_speech["end"] > c_end and first_speech["end"] <= next_w["start"]:
+                        curr_w["end"] = round(first_speech["end"], 3)
 
     output_segments: List[Segment] = []
     prev_word_end: Optional[float] = None
@@ -355,26 +383,35 @@ def insert_silence_tokens(
         seg_tokens: List[Token] = []
 
         # Leading silence before the very first word of the video
-        if seg_idx == 0 and word_list[0]["start"] >= silence_threshold:
-            s_start = 0.0
-            s_end = round(word_list[0]["start"], 3)
-            gap = round(s_end - s_start, 3)
-            seg_tokens.append(
-                Token(
-                    id=f"tok_{uuid.uuid4().hex[:8]}",
-                    type="silence",
-                    text=format_silence_label(gap),
-                    start=s_start,
-                    end=s_end,
-                    deleted=is_silence_deleted(s_start, s_end),
+        if seg_idx == 0:
+            first_w_start = round(float(word_list[0]["start"]), 3)
+            # Find earliest VAD speech before first word if any
+            if vad_intervals and first_w_start > 0:
+                early_speech = [v for v in vad_intervals if v["start"] < first_w_start]
+                if early_speech and early_speech[0]["start"] < first_w_start:
+                    first_w_start = round(early_speech[0]["start"], 3)
+                    word_list[0]["start"] = first_w_start
+
+            if first_w_start >= silence_threshold:
+                s_start = 0.0
+                s_end = first_w_start
+                gap = round(s_end - s_start, 3)
+                seg_tokens.append(
+                    Token(
+                        id=f"tok_{uuid.uuid4().hex[:8]}",
+                        type="silence",
+                        text=format_silence_label(gap),
+                        start=s_start,
+                        end=s_end,
+                        deleted=is_silence_deleted(s_start, s_end),
+                    )
                 )
-            )
 
         for w_idx, w in enumerate(word_list):
             w_start = round(float(w["start"]), 3)
             w_end = round(max(w_start + 0.02, float(w["end"])), 3)
 
-            # Check intra-segment gap (for w_idx > 0; inter-segment gap is placed at the end of previous segment)
+            # Check intra-segment gap
             if w_idx > 0 and prev_word_end is not None:
                 gap = round(w_start - prev_word_end, 3)
                 if gap >= silence_threshold:
@@ -401,7 +438,7 @@ def insert_silence_tokens(
             )
             prev_word_end = w_end
 
-        # Inter-segment silence (placed at the tail of current segment, just like Vrew)
+        # Inter-segment silence (placed at tail of current segment)
         if seg_idx < len(non_empty) - 1:
             next_seg_first_start = round(float(non_empty[seg_idx + 1][0]["start"]), 3)
             if prev_word_end is not None:
@@ -418,7 +455,7 @@ def insert_silence_tokens(
                         )
                     )
         elif total_duration is not None and prev_word_end is not None:
-            # Trailing silence at the end of the video
+            # Trailing silence at the end of video
             gap = round(total_duration - prev_word_end, 3)
             if gap >= silence_threshold:
                 seg_tokens.append(
@@ -586,10 +623,11 @@ def transcribe_video_file(
         if current_row:
             clause_rows.append(current_row)
 
-    # Step 6: Insert silence tokens
+    # Step 6: Insert silence tokens strictly bounded by VAD non-speech intervals
     return insert_silence_tokens(
         clause_rows,
         silence_threshold=silence_threshold,
         total_duration=total_duration,
+        vad_intervals=vad_intervals,
     )
 
