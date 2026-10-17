@@ -52,5 +52,3 @@ export interface ExportResponse {
   saved_seconds: number
   cut_count: number
 }
-
-export type EditorMode = 'cut' | 'edit'

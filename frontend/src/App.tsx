@@ -51,7 +51,6 @@ import {
   resolveVirtualPlayhead,
 } from './timeline'
 import {
-  EditorMode,
   ExportResponse,
   ProjectMetadata,
   Segment,
@@ -85,8 +84,7 @@ export default function App() {
   const [paddingSec, setPaddingSec] = useState<number>(0.05)
   const [mergeGapSec, setMergeGapSec] = useState<number>(0.08)
 
-  // Editor Mode & Selection State
-  const [editorMode, setEditorMode] = useState<EditorMode>('cut')
+  // Selection & Caret State
   const [selectedTokenIds, setSelectedTokenIds] = useState<Set<string>>(new Set())
   const [anchorTokenId, setAnchorTokenId] = useState<string | null>(null)
   const [isDraggingSelect, setIsDraggingSelect] = useState<boolean>(false)
@@ -1080,11 +1078,6 @@ export default function App() {
       }
     }
 
-    if (editorMode === 'edit' && tok.type === 'word') {
-      startEditingToken(tok)
-      return
-    }
-
     // Set cursor position to clicked token
     setCursorTokenId(tok.id)
     setIsAtRowStart(false)
@@ -1520,7 +1513,7 @@ export default function App() {
 
       // Multi-token phrase edit: E key
       if (e.key.toLowerCase() === 'e' && !e.metaKey && !e.ctrlKey) {
-        if (selectedTokenIds.size > 0 && editorMode !== 'edit') {
+        if (selectedTokenIds.size > 0) {
           e.preventDefault()
           handleOpenPhraseModal()
           return
@@ -1537,7 +1530,7 @@ export default function App() {
       // Space: Toggle Play/Pause when single cursor or no selection; toggle cut/restore if multiple selected
       if (e.key === ' ') {
         e.preventDefault()
-        if (selectedTokenIds.size > 1 && editorMode === 'cut') {
+        if (selectedTokenIds.size > 1) {
           toggleSelectedDeleted()
         } else if (videoRef.current) {
           if (videoRef.current.paused) {
@@ -1582,7 +1575,6 @@ export default function App() {
     cursorFlatIndex,
     isAtRowStart,
     anchorTokenId,
-    editorMode,
     flatTokens,
     segments,
     handleUndo,
@@ -1755,34 +1747,6 @@ export default function App() {
 
         {/* Center Editing Mode Switcher & Tools */}
         <div className="flex items-center gap-2 shrink-0">
-          {/* Mode Switcher: Segmented Control */}
-          <div className="flex items-center bg-[#0c0e14] p-0.5 rounded-lg border border-slate-800 shrink-0">
-            <button
-              onClick={() => {
-                setEditorMode('cut')
-                setEditingTokenId(null)
-              }}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs transition whitespace-nowrap ${
-                editorMode === 'cut'
-                  ? 'bg-[#00d287] text-slate-950 font-bold shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 font-medium'
-              }`}
-            >
-              <Scissors className="w-3.5 h-3.5 shrink-0" />
-              <span>剪輯模式</span>
-            </button>
-            <button
-              onClick={() => setEditorMode('edit')}
-              className={`flex items-center gap-1.5 px-3 py-1 rounded-md text-xs transition whitespace-nowrap ${
-                editorMode === 'edit'
-                  ? 'bg-indigo-500 text-white font-bold shadow-sm'
-                  : 'text-slate-400 hover:text-slate-200 font-medium'
-              }`}
-            >
-              <Edit3 className="w-3.5 h-3.5 shrink-0" />
-              <span>改錯字</span>
-            </button>
-          </div>
 
           {/* Undo / Redo */}
           <div className="flex items-center bg-[#0c0e14] p-0.5 rounded-lg border border-slate-800 shrink-0">
