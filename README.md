@@ -46,7 +46,7 @@
 安裝 Homebrew 後，一鍵安裝所需的工具：
 
 ```bash
-brew install ffmpeg python node
+brew install ffmpeg python@3.11 node
 ```
 
 ### 步驟 2：下載 Werv 專案

@@ -50,28 +50,52 @@ if [ -d "$ROOT_DIR/.git" ]; then
   fi
 fi
 
-# 1. 檢查系統基本依賴環境 (Homebrew / ffmpeg / python3 / node)
-# 尋找原生 arm64 的 python3
+# 1. 尋找原生 arm64 且相容 PyTorch / AI 模型的 Python (優先 3.11 / 3.12 / 3.10)
 PYTHON_BIN=""
-for py in "/opt/homebrew/bin/python3" "$(command -v python3 2>/dev/null)" "/usr/bin/python3"; do
-  if [ -x "$py" ]; then
+for py in \
+  "/opt/homebrew/bin/python3.11" \
+  "/opt/homebrew/bin/python3.12" \
+  "/opt/homebrew/bin/python3.10" \
+  "$(command -v python3.11 2>/dev/null)" \
+  "$(command -v python3.12 2>/dev/null)" \
+  "$(command -v python3.10 2>/dev/null)" \
+  "/usr/local/bin/python3.11" \
+  "/usr/local/bin/python3.12" \
+  "/usr/local/bin/python3.10" \
+  "/opt/homebrew/bin/python3" \
+  "$(command -v python3 2>/dev/null)" \
+  "/usr/bin/python3"; do
+  if [ -n "$py" ] && [ -x "$py" ]; then
     PY_ARCH=$("$py" -c "import platform; print(platform.machine())" 2>/dev/null || echo "")
-    if [ "$PY_ARCH" = "arm64" ]; then
+    PY_VER_MINOR=$("$py" -c "import sys; print(sys.version_info.minor if sys.version_info.major == 3 else 0)" 2>/dev/null || echo "0")
+    if [ "$PY_ARCH" = "arm64" ] && [ "$PY_VER_MINOR" -ge 10 ] && [ "$PY_VER_MINOR" -le 12 ]; then
       PYTHON_BIN="$py"
       break
     fi
   fi
 done
+
+# 若系統找不到 3.10 ~ 3.12 的 Python，自動提示或安裝 python@3.11
 if [ -z "$PYTHON_BIN" ]; then
-  PYTHON_BIN="python3"
+  echo ""
+  echo "⚠️ 偵測到目前系統缺少相容的 Python (PyTorch 核心僅穩定支援 Python 3.10 ~ 3.12)。"
+  if command -v brew &>/dev/null; then
+    echo "📦 正在自動透過 Homebrew 安裝相容性最佳的 Python 3.11..."
+    brew install python@3.11
+    if [ -x "/opt/homebrew/bin/python3.11" ]; then
+      PYTHON_BIN="/opt/homebrew/bin/python3.11"
+    elif command -v python3.11 &>/dev/null; then
+      PYTHON_BIN="$(command -v python3.11)"
+    fi
+  else
+    echo "❌ 請先安裝 Homebrew 並執行：brew install python@3.11"
+    exit 1
+  fi
 fi
 
 MISSING_DEPS=""
 if ! command -v ffmpeg &> /dev/null; then
   MISSING_DEPS="$MISSING_DEPS ffmpeg"
-fi
-if ! command -v python3 &> /dev/null && [ ! -x "/opt/homebrew/bin/python3" ]; then
-  MISSING_DEPS="$MISSING_DEPS python"
 fi
 if ! command -v node &> /dev/null; then
   MISSING_DEPS="$MISSING_DEPS node"
@@ -101,11 +125,13 @@ fi
 mkdir -p "$ROOT_DIR/storage"
 
 # 3. 自動初始化 Python 虛擬環境與安裝套件
-# 檢查舊的 .venv 是否存在架構問題
+# 檢查舊的 .venv 是否存在架構問題或 Python 版本不相容（必須為 arm64 且 Python 3.10 ~ 3.12）
 if [ -d "$ROOT_DIR/.venv" ]; then
   VENV_ARCH=$("$ROOT_DIR/.venv/bin/python" -c "import platform; print(platform.machine())" 2>/dev/null || echo "corrupted")
-  if [ "$VENV_ARCH" != "arm64" ]; then
-    echo "⚠️ 偵測到舊的 .venv 架構異常 ($VENV_ARCH)，正在自動重建為 Apple Silicon (arm64)..."
+  VENV_MINOR=$("$ROOT_DIR/.venv/bin/python" -c "import sys; print(sys.version_info.minor if sys.version_info.major == 3 else 0)" 2>/dev/null || echo "0")
+  if [ "$VENV_ARCH" != "arm64" ] || [ "$VENV_MINOR" -lt 10 ] || [ "$VENV_MINOR" -gt 12 ]; then
+    echo "⚠️ 偵測到舊的 .venv 不相容 (架構: $VENV_ARCH, Python 版本: 3.$VENV_MINOR，需為 arm64 且 Python 3.10~3.12)"
+    echo "♻️ 正在自動移除並使用相容的 Python ($PYTHON_BIN) 重建 .venv..."
     rm -rf "$ROOT_DIR/.venv"
   fi
 fi
@@ -113,7 +139,7 @@ fi
 # 檢查關鍵依賴套件是否已完整安裝
 VENV_NEEDS_INSTALL=0
 if [ ! -d "$ROOT_DIR/.venv" ]; then
-  echo "📦 正在建立原生 arm64 Python 虛擬環境 (.venv)..."
+  echo "📦 正在建立原生 arm64 (Python 3.10~3.12) 虛擬環境 (.venv)..."
   "$PYTHON_BIN" -m venv "$ROOT_DIR/.venv"
   VENV_NEEDS_INSTALL=1
 elif ! "$ROOT_DIR/.venv/bin/python" -c "import fastapi, mlx_whisper, silero_vad, torch" 2>/dev/null; then
