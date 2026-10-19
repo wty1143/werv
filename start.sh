@@ -8,6 +8,26 @@ echo "========================================================"
 echo "  🎬 Werv Studio (Mac Apple Silicon 逐字稿剪輯工作站)"
 echo "========================================================"
 
+# 0. 自動檢查並拉取 GitHub 最新版本 (完全免手動下指令)
+if [ -d "$ROOT_DIR/.git" ]; then
+  if git fetch --quiet origin main 2>/dev/null; then
+    LOCAL_HASH=$(git rev-parse HEAD 2>/dev/null || echo "")
+    REMOTE_HASH=$(git rev-parse origin/main 2>/dev/null || echo "")
+    if [ -n "$LOCAL_HASH" ] && [ -n "$REMOTE_HASH" ] && [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
+      echo "✨ 發現 GitHub 有新版本！正在自動更新至最新版..."
+      git pull --ff-only origin main || true
+      if [ -d "$ROOT_DIR/.venv" ]; then
+        "$ROOT_DIR/.venv/bin/pip" install -q -r "$ROOT_DIR/backend/requirements.txt" 2>/dev/null || true
+      fi
+      if [ -d "$ROOT_DIR/frontend/node_modules" ]; then
+        (cd "$ROOT_DIR/frontend" && npm install --silent 2>/dev/null || true)
+      fi
+      echo "🎉 自動更新完成！即將為您啟動..."
+      echo ""
+    fi
+  fi
+fi
+
 # 1. 檢查系統基本依賴環境 (Homebrew / ffmpeg / python3 / node)
 MISSING_DEPS=""
 if ! command -v ffmpeg &> /dev/null; then
