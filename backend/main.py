@@ -325,6 +325,22 @@ def reveal_in_finder(filename: str):
         raise HTTPException(status_code=500, detail=f"無法在 Finder 中開啟: {e}")
 
 
+@app.post("/api/export/open/{filename}")
+def open_in_default_player(filename: str):
+    """
+    在 macOS 預設播放器 (如 QuickTime Player, IINA) 中直接播放剛匯出的成品影片
+    """
+    safe_filename = Path(filename).name
+    file_path = EXPORTS_DIR / safe_filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="檔案不存在")
+    try:
+        subprocess.run(["open", str(file_path)], check=True)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"無法開啟檔案: {e}")
+
+
 @app.post("/api/demo", response_model=ProjectMetadata)
 def create_demo_project(
     transcribe: bool = True,

@@ -9,7 +9,6 @@ import {
   ChevronUp,
   Clock,
   CornerDownLeft,
-  Download,
   Edit3,
   Eye,
   EyeOff,
@@ -1755,15 +1754,20 @@ export default function App() {
     window.addEventListener('mouseup', handleMouseUp)
   }
 
-  // Download Exported MP4 directly via attachment (prevents page navigation & heartbeat termination)
-  const handleDownloadExport = () => {
+  // Open Exported Video directly in macOS default player (QuickTime / IINA)
+  const handleOpenInDefaultPlayer = async () => {
     if (!exportResult) return
-    const a = document.createElement('a')
-    a.href = exportResult.download_url
-    a.download = exportResult.filename
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
+    try {
+      const resp = await fetch(`/api/export/open/${encodeURIComponent(exportResult.filename)}`, {
+        method: 'POST',
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.detail || '無法開啟檔案')
+      }
+    } catch (err: any) {
+      alert(err.message || '無法開啟影片播放器')
+    }
   }
 
   // Reveal Exported Video in macOS Finder
@@ -3406,8 +3410,8 @@ export default function App() {
               />
             </div>
 
-            {/* Download and Navigation Buttons */}
-            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+            {/* Action Buttons */}
+            <div className="flex items-center justify-between pt-3 border-t border-slate-800">
               <button
                 onClick={() => setExportResult(null)}
                 className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
@@ -3418,21 +3422,22 @@ export default function App() {
 
               <div className="flex items-center gap-3">
                 <button
-                  onClick={handleRevealInFinder}
-                  disabled={isRevealing}
-                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition disabled:opacity-50"
-                  title="在 macOS Finder 中標記定位此檔案"
+                  onClick={handleOpenInDefaultPlayer}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
+                  title="以 macOS 預設播放器 (QuickTime / IINA) 開啟"
                 >
-                  <Folder className="w-4 h-4 text-amber-400" />
-                  <span>{isRevealing ? '正在開啟 Finder...' : '在 Finder 中顯示'}</span>
+                  <Play className="w-3.5 h-3.5 text-cyan-400 fill-current" />
+                  <span>以播放器開啟</span>
                 </button>
 
                 <button
-                  onClick={handleDownloadExport}
-                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-bold text-sm shadow-lg shadow-emerald-500/25 transition"
+                  onClick={handleRevealInFinder}
+                  disabled={isRevealing}
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-bold text-sm shadow-lg shadow-emerald-500/25 transition disabled:opacity-50"
+                  title="在 macOS Finder 中標記定位此檔案"
                 >
-                  <Download className="w-4 h-4" />
-                  <span>⬇️ 下載成品影片 (.MP4)</span>
+                  <Folder className="w-4 h-4 fill-current" />
+                  <span>{isRevealing ? '正在開啟 Finder...' : '📂 在 Finder 中顯示檔案'}</span>
                 </button>
               </div>
             </div>
