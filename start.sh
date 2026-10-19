@@ -32,17 +32,21 @@ fi
 
 # 0.1 自動檢查並拉取 GitHub 最新版本 (完全免手動下指令)
 if [ -d "$ROOT_DIR/.git" ]; then
+  # 若本地 package-lock.json 被 npm 自動修改，先還原避免阻擋 git pull
+  git checkout -- "$ROOT_DIR/frontend/package-lock.json" 2>/dev/null || true
+
   if git fetch --quiet origin main 2>/dev/null; then
     LOCAL_HASH=$(git rev-parse HEAD 2>/dev/null || echo "")
     REMOTE_HASH=$(git rev-parse origin/main 2>/dev/null || echo "")
     if [ -n "$LOCAL_HASH" ] && [ -n "$REMOTE_HASH" ] && [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
       echo "✨ 發現 GitHub 有新版本！正在自動更新至最新版..."
-      git pull --ff-only origin main || true
+      git checkout -- "$ROOT_DIR/frontend/package-lock.json" 2>/dev/null || true
+      git pull --ff-only origin main || (git stash && git pull --ff-only origin main && git stash drop 2>/dev/null) || true
       if [ -d "$ROOT_DIR/.venv" ]; then
         "$ROOT_DIR/.venv/bin/pip" install -q -r "$ROOT_DIR/backend/requirements.txt" 2>/dev/null || true
       fi
       if [ -d "$ROOT_DIR/frontend/node_modules" ]; then
-        (cd "$ROOT_DIR/frontend" && npm install --silent 2>/dev/null || true)
+        (cd "$ROOT_DIR/frontend" && npm install --silent --no-save 2>/dev/null || true)
       fi
       echo "🎉 自動更新完成！即將為您啟動..."
       echo ""
@@ -165,7 +169,7 @@ fi
 if [ ! -d "$ROOT_DIR/frontend/node_modules" ]; then
   echo "📦 第一次執行：正在安裝前端介面套件 (React, Vite, Lucide)..."
   cd "$ROOT_DIR/frontend"
-  npm install
+  npm install --no-save
   cd "$ROOT_DIR"
 fi
 
