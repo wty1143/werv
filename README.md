@@ -1,38 +1,86 @@
-# Werv Studio — Mac 本機端逐字稿剪輯工具 (Apple Silicon Edition)
+# 🎬 Werv Studio (Mac Apple Silicon 逐字稿剪輯工作站)
 
-複刻 **Vrew** 最核心的兩項體驗，專為 **Apple Silicon (M 系列晶片)** 打造的零雲端成本、高精準度台灣繁體中文「刪字即剪片」工具：
-
-1. **高精準度的台灣繁體中文語音辨識與字級對齊 (模組 A)**
-   - 使用 `mlx-whisper` 原生載入 `mlx-community/whisper-large-v3-turbo` 或 `whisper-large-v3`
-   - 強制鎖定 `language="zh"`、`word_timestamps=True`、`condition_on_previous_text=False`（防止長靜音與背景音樂幻覺漂移）
-   - 支援自訂專有名詞 `initial_prompt`，並結合 `OpenCC (s2twp)` 強制轉為台灣繁體中文與台灣慣用詞彙
-   - 結合 `silero-vad` 語音起訖點校準每句首尾字元時間邊界，避免字尾時間拉長吃進靜音段
-   - 自動偵測相鄰字元間隔 `>= 門檻 (預設 0.4s，UI 即時可調)` 生成 `[··· 0.6s]` 氣口積木
-
-2. **「句子列 + 字元積木」雙模式編輯器 (模組 B)**
-   - **剪輯刪除模式 (Cut Mode)**：點選或拖曳選取任意單字、詞組或氣口，按 `Space` 或 `Delete` 切換刪除線與半透明標記 (`deleted = true`)
-   - **改錯字模式 (Edit Text Mode)**：雙擊任意單字（或切換為改錯字模式點擊），直接修改文字而不改變 `start/end` 與剪輯狀態
-   - **氣口批次操作**：支援「一鍵選取 / 一鍵刪除所有 >= X 秒的氣口」與完整 `Undo / Redo` (`⌘Z` / `⌘⇧Z`) 歷史堆疊
-   - **分行與合併**：在任一字按 `Enter` 將該列拆分為兩列字幕；在列首按 `Backspace`（或點擊合併按鈕）與上一列合併
-
-3. **零延遲虛擬時間軸預覽 (模組 C)**
-   - 編輯過程絕不呼叫 FFmpeg 重新壓片
-   - 自動將 `deleted = false` 的 Token 加上前後 `0.05s` Padding 並合併相距 `<= 0.08s` 的區間 (`keep_ranges`)
-   - 使用 `requestAnimationFrame` 高頻監聽 `video.currentTime`，播放頭進入刪除區間時瞬間跳轉至下一段 `keep_range.start`
-
-4. **Apple VideoToolbox 硬體加速匯出 + 重算時間軸 SRT (模組 D)**
-   - 嚴禁使用 `-c copy`，透過 FFmpeg `trim` / `atrim` 與 `15ms afade` 消除切點電流爆音 (Audio Pop)
-   - 強制使用 Mac 硬體編碼 `-c:v h264_videotoolbox -b:v 15M -pix_fmt yuv420p -c:a aac -b:a 192k`
-   - 當保留片段超過 50 段時自動寫入暫存腳本檔呼叫，避免命令列過長
-   - 精準重算 (Remap) 每一列未刪除文字在新影片中的累積時間戳，一鍵打包下載 `.mp4` + UTF-8 `.srt` (`.zip`) 供匯入剪映 (CapCut) 後製
+> 專為 **Apple Silicon (M 系列 Mac)** 打造的高效繁體中文「刪字即剪片」工具。複刻 **Vrew** 核心工作流，具備零雲端成本、隱私保護、本地端 MLX 硬體加速辨識與 VideoToolbox 極速匯出。
 
 ---
 
-## 快速啟動
+## ✨ 核心特色
+
+1. **台灣繁體中文高精準度語音辨識**
+   - 搭載 Apple 原生 `mlx-whisper`（支援 `whisper-large-v3-turbo`），秒級完成辨識
+   - 結合 `Silero-VAD` 語音起訖點對齊，完美杜絕每句字首字尾被吃音或時間軸漂移
+   - 內建 `OpenCC (s2twp)` 自動轉為道地台灣繁體中文慣用語
+   - 自動偵測停頓氣口並生成 `[··· 0.8s]` 氣口膠囊
+
+2. **Vrew 經典雙軌分離設計 (Dual-Track)**
+   - **上層 `🎬 Video Cuts`（音畫裁切軌）**：字塊與氣口對應毫秒級影片時間軸。按 `Backspace` 或點選右上角 `(x)` 剪除，精確裁切影片畫面與聲音。
+   - **下層 `💬 螢幕字幕`（獨立編輯框）**：像 Word 般隨意編輯、加標點、改錯字，**絕不破壞影片時間軸**。影片 CC 預覽與匯出 `.SRT` 均以文字框內容為準。
+   - **`[A]` 自動連動 vs `[✎ 自訂]` 模式**：刪除字塊時字幕自動連動；改亂時點擊 `🔄` 一鍵重設還原。
+
+3. **專業粗剪與智慧修剪功能**
+   - **氣口縮短**：可將 `≥0.5s` 的長停頓縮短保留為自然的呼吸換氣長度（如 `0.25s`），不再一刀掐斷。
+   - **贅字清理**：內建台灣常見口頭禪庫（那個、就是、然後、其實...），支援自訂關鍵字與一鍵批次剪除。
+   - **多字連選改詞 (`E`)**：框選多字按 `E` 鍵直接輸入新詞，自動依字數均分重算發音時間軸。
+   - **關鍵字搜尋與取代 (`⌘F`)**：跨積木跳轉試聽、單處替換、全部取代或全選一鍵剪除。
+   - **摺疊已剪**：一鍵將連續刪除的片段濃縮為 `[✂️ 已剪 N 項]` 膠囊，介面俐落乾淨。
+
+4. **零延遲虛擬剪輯預覽 & Apple VideoToolbox 硬體匯出**
+   - 剪輯過程即時無縫跳剪，免等轉檔
+   - 匯出採用 Apple 硬體加速 `h264_videotoolbox`，內建 15ms 音訊淡入淡出防爆音 (Audio Pop)
+   - 自動重算新時間軸之 UTF-8 `.srt`，一鍵打包下載 `.mp4 + .srt` (`.zip`)，無縫匯入剪映 (CapCut) 後製！
+
+---
+
+## 🍎 Mac 懶人包安裝與啟動教學 (新手友善)
+
+本工具為 Apple Silicon (M1 / M2 / M3 / M4) 原生最佳化，新 Mac 只要照以下步驟操作一次即可：
+
+### 步驟 1：安裝基礎環境 (若已安裝可跳過)
+
+打開 Mac 的 **「終端機 (Terminal)」**，貼上以下指令安裝 [Homebrew](https://brew.sh)：
 
 ```bash
-cd /Users/yuanyuanwang/workspace/werv
-./start.sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 ```
 
-啟動後打開瀏覽器前往：**http://localhost:5173**
+安裝 Homebrew 後，一鍵安裝所需的工具：
+
+```bash
+brew install ffmpeg python node
+```
+
+### 步驟 2：下載 Werv 專案
+
+在終端機執行：
+
+```bash
+git clone https://github.com/wty1143/werv.git
+cd werv
+```
+
+### 步驟 3：雙擊啟動 (懶人最愛)
+
+專案內已準備好 **`Werv.command`**：
+* 在 Finder 中打開 `werv` 資料夾，直接**雙擊 `Werv.command`**。
+* 第一次執行會自動建立虛擬環境並安裝所有套件，完成後**會自動開啟瀏覽器**：
+  👉 `http://localhost:5173`
+* 往後每次使用，只要直接**雙擊 `Werv.command`** 即可啟動！
+
+> 💡 也可以在終端機直接執行：`./start.sh`
+
+---
+
+## ⌨️ 常用鍵盤快捷鍵一覽
+
+| 快捷鍵 | 功能說明 |
+| :--- | :--- |
+| **`Backspace`** | 游標往左連續剪除文字/氣口（Word 模式）；在列首按與上一列合併 |
+| **`Delete`** | 游標向後剪除字元 (Forward Delete) |
+| **`← → ↑ ↓`** | 移動文字游標（按住 `Shift` 可連續擴選多字） |
+| **`Space`** | 播放 / 暫停（若有多選積木則批量切換剪除） |
+| **`R`** | 還原選取或游標處之已剪除字元 / 恢復縮短氣口為原始長度 |
+| **`E`** | 多字連選直接改詞（自動等比重算時間軸） |
+| **`⌘F`** | 呼叫搜尋與批量取代列（Enter 跳下一個、Shift+Enter 上一個） |
+| **`Enter`** | 在游標處斷行拆分為兩列字幕 |
+| **雙擊單字** | 行內快速修正單字時間軸 |
+| **`⌘Z` / `⌘⇧Z`** | 復原 / 重做 (Undo / Redo) |
