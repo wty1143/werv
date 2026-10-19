@@ -1,10 +1,11 @@
+import glob
 import os
 import re
 import subprocess
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from .asr_engine import FFMPEG_BIN, probe_video_metadata
 from .models import KeepRange, Segment, Token, SubtitleStyle
@@ -184,37 +185,68 @@ def generate_remapped_srt(segments: List[Segment], keep_ranges: List[KeepRange])
     return "\n".join(srt_blocks)
 
 
-def resolve_macos_font_path(font_family: str) -> str:
-    """Find a guaranteed system font path on macOS compatible with FreeType/Pillow."""
-    family_map = {
-        "pingfang": [
-            "/System/Library/Fonts/Hiragino Sans GB.ttc",
-            "/System/Library/Fonts/STHeiti Medium.ttc",
-        ],
-        "heiti": [
-            "/System/Library/Fonts/STHeiti Medium.ttc",
-            "/System/Library/Fonts/STHeiti Light.ttc",
-        ],
-        "songti": [
-            "/System/Library/Fonts/Supplemental/Songti.ttc",
-            "/System/Library/Fonts/Songti.ttc",
-        ],
-        "hiragino": [
-            "/System/Library/Fonts/Hiragino Sans GB.ttc",
-            "/System/Library/Fonts/STHeiti Medium.ttc",
-        ],
-    }
-    for p in family_map.get(font_family, family_map["pingfang"]):
+def load_macos_font(font_family: str, size: int):
+    """
+    Load a guaranteed macOS Chinese font with FreeType/Pillow, explicitly verifying
+    Traditional Chinese glyph coverage (e.g. 沒, 權, 這, 灣, 體) to prevent TTC Simplified Chinese
+    face fallbacks (such as Songti SC Black at index 0 which completely lacks 沒 and 權).
+    """
+    from PIL import ImageFont
+
+    TEST_CHARS = "你沒有投票權這是一部台灣繁體中文測試影片"
+
+    candidates: List[Tuple[str, int]] = []
+    if font_family == "pingfang":
+        pf_matches = glob.glob("/System/Library/AssetsV2/**/PingFang.ttc", recursive=True)
+        if pf_matches:
+            candidates.append((pf_matches[0], 10))  # PingFang TC Semibold
+            candidates.append((pf_matches[0], 6))   # PingFang TC Medium
+            candidates.append((pf_matches[0], 2))   # PingFang TC Regular
+        candidates.append(("/System/Library/Fonts/Hiragino Sans GB.ttc", 2))
+        candidates.append(("/System/Library/Fonts/STHeiti Medium.ttc", 0))
+    elif font_family == "heiti":
+        candidates.append(("/System/Library/Fonts/STHeiti Medium.ttc", 0))  # Heiti TC Medium
+        candidates.append(("/System/Library/Fonts/STHeiti Light.ttc", 0))
+    elif font_family == "songti":
+        # In Songti.ttc, index 2 is Songti TC Bold and index 7 is Songti TC Regular (100% Traditional Chinese coverage)
+        candidates.append(("/System/Library/Fonts/Supplemental/Songti.ttc", 2))
+        candidates.append(("/System/Library/Fonts/Supplemental/Songti.ttc", 7))
+        candidates.append(("/System/Library/Fonts/Songti.ttc", 2))
+        candidates.append(("/System/Library/Fonts/Songti.ttc", 7))
+    elif font_family == "hiragino":
+        candidates.append(("/System/Library/Fonts/Hiragino Sans GB.ttc", 2))  # W6 Bold
+        candidates.append(("/System/Library/Fonts/Hiragino Sans GB.ttc", 0))  # W3 Regular
+
+    # General fallbacks
+    candidates.append(("/System/Library/Fonts/STHeiti Medium.ttc", 0))
+    candidates.append(("/System/Library/Fonts/Hiragino Sans GB.ttc", 0))
+    candidates.append(("/System/Library/Fonts/Supplemental/Songti.ttc", 2))
+    candidates.append(("/System/Library/Fonts/Supplemental/Arial Unicode.ttf", 0))
+
+    for path, idx in candidates:
+        if os.path.exists(path):
+            try:
+                f = ImageFont.truetype(path, size, index=idx)
+                # Verify glyph coverage for Traditional Chinese
+                all_ok = True
+                for ch in TEST_CHARS:
+                    bb = f.getbbox(ch)
+                    if bb[0] == bb[2] or bb[1] == bb[3]:
+                        all_ok = False
+                        break
+                if all_ok:
+                    return f
+            except Exception:
+                continue
+
+    # Final fallback
+    for p in ["/System/Library/Fonts/STHeiti Medium.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc"]:
         if os.path.exists(p):
-            return p
-    for fallback in [
-        "/System/Library/Fonts/STHeiti Medium.ttc",
-        "/System/Library/Fonts/Hiragino Sans GB.ttc",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-    ]:
-        if os.path.exists(fallback):
-            return fallback
-    return "Arial.ttf"
+            try:
+                return ImageFont.truetype(p, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
 
 
 def wrap_text_cjk(text: str, font, max_width: int) -> List[str]:
@@ -298,14 +330,10 @@ def render_subtitle_overlay_track(
     if not events:
         return None
 
-    # 2. Setup typography scaled to canvas height (reference 1080p)
-    scale = video_height / 1080.0
+    # 2. Setup typography scaled to canvas (reference min dimension 1080p, symmetric for landscape & portrait)
+    scale = min(video_width, video_height) / 1080.0
     scaled_font_size = max(18, int(round(subtitle_style.font_size * scale)))
-    font_path = resolve_macos_font_path(subtitle_style.font_family)
-    try:
-        font = ImageFont.truetype(font_path, scaled_font_size)
-    except Exception:
-        font = ImageFont.load_default()
+    font = load_macos_font(subtitle_style.font_family, scaled_font_size)
 
     # 3. Create transparent blank PNG
     blank_png = os.path.join(temp_dir, "blank.png")

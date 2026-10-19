@@ -56,8 +56,31 @@ def probe_video_metadata(video_path: str) -> Dict[str, Any]:
 
     for stream in data.get("streams", []):
         if stream.get("codec_type") == "video":
-            width = int(stream.get("width", width))
-            height = int(stream.get("height", height))
+            raw_w = int(stream.get("width", width))
+            raw_h = int(stream.get("height", height))
+
+            # Extract rotation from side_data_list (Display Matrix) or tags
+            rotation = 0
+            for sd in stream.get("side_data_list", []):
+                if "rotation" in sd:
+                    try:
+                        rotation = int(sd["rotation"])
+                    except (ValueError, TypeError):
+                        pass
+            if not rotation and "tags" in stream and "rotate" in stream["tags"]:
+                try:
+                    rotation = int(stream["tags"]["rotate"])
+                except (ValueError, TypeError):
+                    pass
+
+            # When rotated by 90 or 270 degrees (e.g. mobile portrait videos), visual dimensions are transposed
+            if abs(rotation) in (90, 270):
+                width = raw_h
+                height = raw_w
+            else:
+                width = raw_w
+                height = raw_h
+
             r_frame_rate = stream.get("r_frame_rate", "30/1")
             if "/" in r_frame_rate:
                 num, den = r_frame_rate.split("/", 1)

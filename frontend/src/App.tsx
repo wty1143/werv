@@ -1728,8 +1728,9 @@ export default function App() {
   const handleSubtitleMouseDown = (e: React.MouseEvent) => {
     e.preventDefault()
     e.stopPropagation()
-    if (!videoContainerRef.current) return
-    const containerRect = videoContainerRef.current.getBoundingClientRect()
+    const targetEl = videoRef.current || videoContainerRef.current
+    if (!targetEl) return
+    const containerRect = targetEl.getBoundingClientRect()
     const startY = e.clientY
     const startBottomPct = subtitleStyle.bottom_offset_pct
     isDraggingSubtitleRef.current = true
@@ -1738,8 +1739,8 @@ export default function App() {
     const handleMouseMove = (moveEvent: MouseEvent) => {
       if (!isDraggingSubtitleRef.current) return
       const deltaY = startY - moveEvent.clientY // Moving up increases bottom offset
-      const deltaPct = (deltaY / containerRect.height) * 100
-      const newPct = Math.max(3, Math.min(85, Math.round((startBottomPct + deltaPct) * 10) / 10))
+      const deltaPct = (deltaY / (containerRect.height || 360)) * 100
+      const newPct = Math.max(2, Math.min(88, Math.round((startBottomPct + deltaPct) * 10) / 10))
       setSubtitleStyle((prev) => ({ ...prev, bottom_offset_pct: newPct }))
     }
 
@@ -2112,11 +2113,11 @@ export default function App() {
             className="relative flex-1 bg-black rounded-xl overflow-hidden border border-slate-800/90 flex items-center justify-center shadow-2xl group select-none"
           >
             {project ? (
-              <>
+              <div className="relative max-h-full max-w-full flex items-center justify-center">
                 <video
                   ref={videoRef}
                   src={project.video_url}
-                  className="max-h-full max-w-full object-contain cursor-pointer"
+                  className="max-h-full max-w-full object-contain cursor-pointer block"
                   onClick={togglePlayPause}
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}
@@ -2174,7 +2175,7 @@ export default function App() {
                   return (
                     <div
                       style={{ bottom: `${subtitleStyle.bottom_offset_pct}%` }}
-                      className="absolute inset-x-4 flex flex-col items-center justify-center pointer-events-auto transition-[bottom] duration-75"
+                      className="absolute inset-x-2 flex flex-col items-center justify-center pointer-events-auto transition-[bottom] duration-75"
                     >
                       <div
                         onMouseDown={handleSubtitleMouseDown}
@@ -2226,7 +2227,7 @@ export default function App() {
                     </div>
                   )
                 })()}
-              </>
+              </div>
             ) : (
               <div className="text-center p-8 text-slate-500 text-sm">
                 尚未載入影片，請點擊上方「匯入影片」或「載入範例」
