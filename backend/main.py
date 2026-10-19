@@ -217,6 +217,16 @@ def create_demo_project(
     project_id = "proj_demo_sample"
     dest_mp4 = UPLOADS_DIR / f"{project_id}.mp4"
     json_path = _project_json_path(project_id)
+    demo_assets_dir = BASE_DIR / "demo_assets"
+
+    # 若 storage 還沒有範例檔案，優先從倉庫隨附的 demo_assets 複製，達到零秒載入
+    if not dest_mp4.exists() and (demo_assets_dir / f"{project_id}.mp4").exists():
+        dest_mp4.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(demo_assets_dir / f"{project_id}.mp4", dest_mp4)
+
+    if not json_path.exists() and (demo_assets_dir / f"{project_id}.json").exists():
+        json_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(demo_assets_dir / f"{project_id}.json", json_path)
 
     if not force and dest_mp4.exists() and json_path.exists():
         cached = _load_project(project_id)
@@ -224,6 +234,7 @@ def create_demo_project(
             for seg in cached.segments:
                 for tok in seg.tokens:
                     tok.deleted = False
+                    tok.keep_duration = None
             _save_project(cached)
             return cached
 

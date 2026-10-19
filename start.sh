@@ -121,8 +121,16 @@ if [ -n "$MISSING_DEPS" ]; then
   fi
 fi
 
-# 2. 建立本地儲存庫資料夾
-mkdir -p "$ROOT_DIR/storage"
+# 2. 建立本地儲存庫資料夾並同步隨附之範例短片
+mkdir -p "$ROOT_DIR/storage/uploads" "$ROOT_DIR/storage/projects" "$ROOT_DIR/storage/exports"
+if [ -d "$ROOT_DIR/demo_assets" ]; then
+  if [ ! -f "$ROOT_DIR/storage/uploads/proj_demo_sample.mp4" ] && [ -f "$ROOT_DIR/demo_assets/proj_demo_sample.mp4" ]; then
+    cp "$ROOT_DIR/demo_assets/proj_demo_sample.mp4" "$ROOT_DIR/storage/uploads/proj_demo_sample.mp4"
+  fi
+  if [ ! -f "$ROOT_DIR/storage/projects/proj_demo_sample.json" ] && [ -f "$ROOT_DIR/demo_assets/proj_demo_sample.json" ]; then
+    cp "$ROOT_DIR/demo_assets/proj_demo_sample.json" "$ROOT_DIR/storage/projects/proj_demo_sample.json"
+  fi
+fi
 
 # 3. 自動初始化 Python 虛擬環境與安裝套件
 # 檢查舊的 .venv 是否存在架構問題或 Python 版本不相容（必須為 arm64 且 Python 3.10 ~ 3.12）

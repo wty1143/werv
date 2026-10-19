@@ -23,6 +23,10 @@ tmp/
 *.zip
 *.filter
 
+# Pre-bundled Demo Assets
+!demo_assets/
+!demo_assets/**
+
 # macOS / IDE
 .DS_Store
 .idea/

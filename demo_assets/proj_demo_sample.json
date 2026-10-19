@@ -1,0 +1,907 @@
+{
+  "project_id": "proj_demo_sample",
+  "filename": "Werv_台灣繁中測試短片.mp4",
+  "video_url": "/media/uploads/proj_demo_sample.mp4",
+  "duration": 18.605,
+  "width": 1280,
+  "height": 720,
+  "fps": 30.0,
+  "model_name": "mlx-community/whisper-large-v3-turbo",
+  "custom_prompt": "Werv, Vrew, 剪映, Apple Silicon, 氣口",
+  "silence_threshold": 0.4,
+  "segments": [
+    {
+      "id": "seg_caedc723",
+      "tokens": [
+        {
+          "id": "tok_61c7f3b8",
+          "type": "word",
+          "text": "大",
+          "start": 0.0,
+          "end": 0.133,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_bf9f5545",
+          "type": "word",
+          "text": "家",
+          "start": 0.133,
+          "end": 0.267,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_cfb7f13d",
+          "type": "word",
+          "text": "好",
+          "start": 0.267,
+          "end": 0.4,
+          "deleted": false,
+          "keep_duration": null
+        }
+      ],
+      "caption": null
+    },
+    {
+      "id": "seg_86c80093",
+      "tokens": [
+        {
+          "id": "tok_379ae1d6",
+          "type": "word",
+          "text": "歡",
+          "start": 0.64,
+          "end": 0.79,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_04d41ec8",
+          "type": "word",
+          "text": "迎",
+          "start": 0.79,
+          "end": 0.94,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_dc862730",
+          "type": "word",
+          "text": "使",
+          "start": 0.94,
+          "end": 1.26,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_62466576",
+          "type": "word",
+          "text": "用",
+          "start": 1.26,
+          "end": 1.42,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_051e7087",
+          "type": "word",
+          "text": "這",
+          "start": 1.42,
+          "end": 1.58,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_907958e3",
+          "type": "word",
+          "text": "套",
+          "start": 1.58,
+          "end": 1.76,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_89921cea",
+          "type": "word",
+          "text": "跑",
+          "start": 1.76,
+          "end": 1.94,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_14ca2c31",
+          "type": "word",
+          "text": "在",
+          "start": 1.94,
+          "end": 2.16,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_609e7293",
+          "type": "word",
+          "text": "蘋",
+          "start": 2.16,
+          "end": 2.42,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_37a603d8",
+          "type": "word",
+          "text": "果",
+          "start": 2.42,
+          "end": 2.58,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_69485a42",
+          "type": "word",
+          "text": "電",
+          "start": 2.58,
+          "end": 2.72,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_00a0f56a",
+          "type": "word",
+          "text": "腦",
+          "start": 2.72,
+          "end": 2.9,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_fb440ceb",
+          "type": "word",
+          "text": "上",
+          "start": 2.9,
+          "end": 3.08,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_294e5920",
+          "type": "word",
+          "text": "的",
+          "start": 3.08,
+          "end": 3.24,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_11060827",
+          "type": "word",
+          "text": "逐",
+          "start": 3.24,
+          "end": 3.38,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_d3d3cb7c",
+          "type": "word",
+          "text": "字",
+          "start": 3.38,
+          "end": 3.52,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_3424aff1",
+          "type": "word",
+          "text": "稿",
+          "start": 3.52,
+          "end": 3.68,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_79fc2064",
+          "type": "word",
+          "text": "剪",
+          "start": 3.68,
+          "end": 3.84,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_480bcef0",
+          "type": "word",
+          "text": "輯",
+          "start": 3.84,
+          "end": 4.0,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_d951cfd7",
+          "type": "word",
+          "text": "軟",
+          "start": 4.0,
+          "end": 4.18,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_ffc3014a",
+          "type": "word",
+          "text": "體",
+          "start": 4.18,
+          "end": 4.6,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_581ea240",
+          "type": "silence",
+          "text": "[··· 0.6s]",
+          "start": 4.6,
+          "end": 5.2,
+          "deleted": false,
+          "keep_duration": null
+        }
+      ],
+      "caption": null
+    },
+    {
+      "id": "seg_d1b68d58",
+      "tokens": [
+        {
+          "id": "tok_e244a085",
+          "type": "word",
+          "text": "只",
+          "start": 5.2,
+          "end": 5.34,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_624ba225",
+          "type": "word",
+          "text": "要",
+          "start": 5.34,
+          "end": 5.44,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_b25f2272",
+          "type": "word",
+          "text": "在",
+          "start": 5.44,
+          "end": 5.62,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_06f55955",
+          "type": "word",
+          "text": "畫",
+          "start": 5.62,
+          "end": 5.78,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_a45f5e01",
+          "type": "word",
+          "text": "面",
+          "start": 5.78,
+          "end": 5.96,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_446951cb",
+          "type": "word",
+          "text": "上",
+          "start": 5.96,
+          "end": 6.18,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_b1e13390",
+          "type": "word",
+          "text": "選",
+          "start": 6.18,
+          "end": 6.4,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_59669aa7",
+          "type": "word",
+          "text": "取",
+          "start": 6.4,
+          "end": 6.6,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_edc4e2bf",
+          "type": "word",
+          "text": "多",
+          "start": 6.6,
+          "end": 6.74,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_f640c561",
+          "type": "word",
+          "text": "餘",
+          "start": 6.74,
+          "end": 6.9,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_fc872ca2",
+          "type": "word",
+          "text": "的",
+          "start": 6.9,
+          "end": 7.02,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_6c01a559",
+          "type": "word",
+          "text": "贅",
+          "start": 7.02,
+          "end": 7.16,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_f5ea865a",
+          "type": "word",
+          "text": "字",
+          "start": 7.16,
+          "end": 7.34,
+          "deleted": false,
+          "keep_duration": null
+        }
+      ],
+      "caption": null
+    },
+    {
+      "id": "seg_c1b1fbba",
+      "tokens": [
+        {
+          "id": "tok_654ddcd5",
+          "type": "word",
+          "text": "或",
+          "start": 7.48,
+          "end": 7.64,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_76675e97",
+          "type": "word",
+          "text": "是",
+          "start": 7.64,
+          "end": 7.82,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_9eac3413",
+          "type": "word",
+          "text": "空",
+          "start": 7.82,
+          "end": 7.94,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_20583741",
+          "type": "word",
+          "text": "白",
+          "start": 7.94,
+          "end": 8.12,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_db02a56d",
+          "type": "word",
+          "text": "氣",
+          "start": 8.12,
+          "end": 8.28,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_2f68242f",
+          "type": "word",
+          "text": "口",
+          "start": 8.28,
+          "end": 8.52,
+          "deleted": false,
+          "keep_duration": null
+        }
+      ],
+      "caption": null
+    },
+    {
+      "id": "seg_1cdfca76",
+      "tokens": [
+        {
+          "id": "tok_50709ec4",
+          "type": "word",
+          "text": "按",
+          "start": 8.74,
+          "end": 8.9,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_2fe34e37",
+          "type": "word",
+          "text": "下",
+          "start": 8.9,
+          "end": 9.08,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_c3b58ee0",
+          "type": "word",
+          "text": "空",
+          "start": 9.08,
+          "end": 9.26,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_43b089cb",
+          "type": "word",
+          "text": "白",
+          "start": 9.26,
+          "end": 9.44,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_b2ff96d4",
+          "type": "word",
+          "text": "鍵",
+          "start": 9.44,
+          "end": 9.62,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_3e6a2946",
+          "type": "word",
+          "text": "就",
+          "start": 9.62,
+          "end": 9.8,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_518e3a52",
+          "type": "word",
+          "text": "能",
+          "start": 9.8,
+          "end": 9.94,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_cde6025c",
+          "type": "word",
+          "text": "直",
+          "start": 9.94,
+          "end": 10.08,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_c2cf123f",
+          "type": "word",
+          "text": "接",
+          "start": 10.08,
+          "end": 10.22,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_4aad663f",
+          "type": "word",
+          "text": "剪",
+          "start": 10.22,
+          "end": 10.4,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_64745a0c",
+          "type": "word",
+          "text": "掉",
+          "start": 10.4,
+          "end": 10.56,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_82e75ade",
+          "type": "word",
+          "text": "片",
+          "start": 10.56,
+          "end": 10.74,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_3f7a636c",
+          "type": "word",
+          "text": "段",
+          "start": 10.74,
+          "end": 11.2,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_230937c7",
+          "type": "silence",
+          "text": "[··· 0.6s]",
+          "start": 11.2,
+          "end": 11.8,
+          "deleted": false,
+          "keep_duration": null
+        }
+      ],
+      "caption": null
+    },
+    {
+      "id": "seg_c0d2ad85",
+      "tokens": [
+        {
+          "id": "tok_5f849254",
+          "type": "word",
+          "text": "最",
+          "start": 11.8,
+          "end": 12.06,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_484fe688",
+          "type": "word",
+          "text": "後",
+          "start": 12.06,
+          "end": 12.08,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_f9907e6e",
+          "type": "word",
+          "text": "一",
+          "start": 12.08,
+          "end": 12.3,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_c6248cfa",
+          "type": "word",
+          "text": "鍵",
+          "start": 12.3,
+          "end": 12.46,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_35a3e1c0",
+          "type": "word",
+          "text": "匯",
+          "start": 12.46,
+          "end": 12.58,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_42196c7f",
+          "type": "word",
+          "text": "出",
+          "start": 12.58,
+          "end": 12.78,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_4467036f",
+          "type": "word",
+          "text": "硬",
+          "start": 12.78,
+          "end": 13.0,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_ed89e54b",
+          "type": "word",
+          "text": "體",
+          "start": 13.0,
+          "end": 13.14,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_7b61cfaf",
+          "type": "word",
+          "text": "加",
+          "start": 13.14,
+          "end": 13.3,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_4af2111d",
+          "type": "word",
+          "text": "速",
+          "start": 13.3,
+          "end": 13.46,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_15ff476c",
+          "type": "word",
+          "text": "的",
+          "start": 13.46,
+          "end": 13.56,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_6ba868c3",
+          "type": "word",
+          "text": "影",
+          "start": 13.56,
+          "end": 13.72,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_9f10ead1",
+          "type": "word",
+          "text": "片",
+          "start": 13.72,
+          "end": 13.88,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_813fe469",
+          "type": "word",
+          "text": "與",
+          "start": 13.88,
+          "end": 14.2,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_7cc6dde0",
+          "type": "word",
+          "text": "重",
+          "start": 14.2,
+          "end": 14.36,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_ca629b1b",
+          "type": "word",
+          "text": "算",
+          "start": 14.36,
+          "end": 14.54,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_af1c48e0",
+          "type": "word",
+          "text": "時",
+          "start": 14.54,
+          "end": 14.68,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_26a9940a",
+          "type": "word",
+          "text": "間",
+          "start": 14.68,
+          "end": 14.82,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_2df657d6",
+          "type": "word",
+          "text": "軸",
+          "start": 14.82,
+          "end": 14.98,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_68da549f",
+          "type": "word",
+          "text": "的",
+          "start": 14.98,
+          "end": 15.14,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_8063c602",
+          "type": "word",
+          "text": "字",
+          "start": 15.14,
+          "end": 15.28,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_54ac47ac",
+          "type": "word",
+          "text": "幕",
+          "start": 15.28,
+          "end": 15.46,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_e6035dc4",
+          "type": "word",
+          "text": "檔",
+          "start": 15.46,
+          "end": 15.66,
+          "deleted": false,
+          "keep_duration": null
+        }
+      ],
+      "caption": null
+    },
+    {
+      "id": "seg_b3b24e43",
+      "tokens": [
+        {
+          "id": "tok_80d93502",
+          "type": "word",
+          "text": "就",
+          "start": 15.82,
+          "end": 16.02,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_60f3ceac",
+          "type": "word",
+          "text": "能",
+          "start": 16.02,
+          "end": 16.16,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_9190aa96",
+          "type": "word",
+          "text": "直",
+          "start": 16.16,
+          "end": 16.28,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_3531f769",
+          "type": "word",
+          "text": "接",
+          "start": 16.28,
+          "end": 16.4,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_39b94853",
+          "type": "word",
+          "text": "放",
+          "start": 16.4,
+          "end": 16.64,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_737a1a67",
+          "type": "word",
+          "text": "進",
+          "start": 16.64,
+          "end": 16.84,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_45265267",
+          "type": "word",
+          "text": "剪",
+          "start": 16.84,
+          "end": 17.04,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_8893c70c",
+          "type": "word",
+          "text": "映",
+          "start": 17.04,
+          "end": 17.2,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_5e1f14b3",
+          "type": "word",
+          "text": "做",
+          "start": 17.2,
+          "end": 17.42,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_ff51f591",
+          "type": "word",
+          "text": "後",
+          "start": 17.42,
+          "end": 17.58,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_1a316ffc",
+          "type": "word",
+          "text": "製",
+          "start": 17.58,
+          "end": 18.0,
+          "deleted": false,
+          "keep_duration": null
+        },
+        {
+          "id": "tok_5d1272c8",
+          "type": "silence",
+          "text": "[··· 0.6s]",
+          "start": 18.0,
+          "end": 18.605,
+          "deleted": false,
+          "keep_duration": null
+        }
+      ],
+      "caption": null
+    }
+  ],
+  "vad_intervals": [
+    {
+      "start": 0.0,
+      "end": 4.6
+    },
+    {
+      "start": 5.2,
+      "end": 11.2
+    },
+    {
+      "start": 11.8,
+      "end": 18.0
+    }
+  ]
+}
