@@ -20,6 +20,10 @@ else
 fi
 
 osascript -e "tell application \"Terminal\"" \
+          -e "if (count of windows) > 0 and (busy of window 1 is false) then" \
+          -e "  do script \"cd '$TARGET_DIR' && ./start.sh\" in window 1" \
+          -e "else" \
+          -e "  do script \"cd '$TARGET_DIR' && ./start.sh\"" \
+          -e "end if" \
           -e "activate" \
-          -e "do script \"cd '$TARGET_DIR' && ./start.sh\"" \
           -e "end tell"

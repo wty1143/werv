@@ -177,9 +177,26 @@ fi
 cleanup() {
   echo ""
   echo "正在關閉 Werv 前後端服務..."
-  kill $BACKEND_PID $FRONTEND_PID 2>/dev/null || true
-  # 若是專用 Werv 視窗，自動為使用者關閉終端機視窗免去手動操作
-  osascript -e 'tell application "Terminal" to close (every window whose name contains "Werv Studio")' 2>/dev/null || true
+  # 徹底終止前後端及其子進程
+  kill -TERM $BACKEND_PID $FRONTEND_PID 2>/dev/null || true
+  pkill -P $FRONTEND_PID 2>/dev/null || true
+  pkill -f "uvicorn backend.main:app" 2>/dev/null || true
+  pkill -f "vite.*5173" 2>/dev/null || true
+  sleep 0.2
+
+  # 非同步在背景關閉終端機視窗，避免腳本仍在運行中引發 macOS「是否終止下列程序」確認彈窗
+  (
+    sleep 0.4
+    osascript -e 'tell application "Terminal"
+      set targetWindows to (every window whose name contains "Werv Studio")
+      repeat with w in targetWindows
+        close w saving no
+      end repeat
+      if (count of windows) = 0 then
+        quit
+      end if
+    end tell' 2>/dev/null &
+  ) &
 }
 trap cleanup EXIT INT TERM
 
@@ -215,3 +232,4 @@ open "http://localhost:5173" 2>/dev/null || true
 wait $BACKEND_PID 2>/dev/null || true
 echo "👋 偵測到瀏覽器分頁已關閉，Werv Studio 已安全退出。下次見！"
 cleanup
+exit 0
