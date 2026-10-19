@@ -43,6 +43,8 @@ export interface ProjectMetadata {
 export interface ExportResponse {
   export_id: string
   mp4_url: string
+  download_url: string
+  filename: string
   srt_url: string
   bundle_url: string
   srt_content: string
@@ -51,4 +53,18 @@ export interface ExportResponse {
   exported_duration: number
   saved_seconds: number
   cut_count: number
+}
+
+export type SubtitleFontFamily = 'pingfang' | 'heiti' | 'songti' | 'hiragino'
+export type SubtitleStyleMode = 'box' | 'outline' | 'shadow'
+
+export interface SubtitleStyle {
+  enabled: boolean
+  font_family: SubtitleFontFamily
+  font_size: number
+  text_color: string
+  style_mode: SubtitleStyleMode
+  box_opacity: number
+  outline_width: number
+  bottom_offset_pct: number
 }

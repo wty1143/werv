@@ -8,3 +8,4 @@ opencc-python-reimplemented>=0.1.7
 soundfile>=0.12.1
 numpy>=1.26.0
 pydantic>=2.7.0
+pillow>=10.0.0

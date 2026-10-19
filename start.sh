@@ -154,7 +154,7 @@ if [ ! -d "$ROOT_DIR/.venv" ]; then
   echo "📦 正在建立原生 arm64 (Python 3.10~3.12) 虛擬環境 (.venv)..."
   "$PYTHON_BIN" -m venv "$ROOT_DIR/.venv"
   VENV_NEEDS_INSTALL=1
-elif ! "$ROOT_DIR/.venv/bin/python" -c "import fastapi, mlx_whisper, silero_vad, torch" 2>/dev/null; then
+elif ! "$ROOT_DIR/.venv/bin/python" -c "import fastapi, mlx_whisper, silero_vad, torch, PIL" 2>/dev/null; then
   echo "📦 偵測到部分 AI 套件尚未安裝完整，正在修復與補裝..."
   VENV_NEEDS_INSTALL=1
 fi

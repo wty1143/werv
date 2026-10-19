@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDown,
+  ArrowLeft,
   ArrowUp,
   Check,
   ChevronDown,
@@ -14,9 +15,11 @@ import {
   EyeOff,
   FileText,
   Film,
+  Folder,
   FolderOpen,
   Keyboard,
   Merge,
+  Palette,
   Pause,
   Play,
   Redo2,
@@ -27,6 +30,7 @@ import {
   Settings2,
   Sparkles,
   Trash2,
+  Type,
   Undo2,
   Volume2,
   VolumeX,
@@ -54,6 +58,9 @@ import {
   ExportResponse,
   ProjectMetadata,
   Segment,
+  SubtitleFontFamily,
+  SubtitleStyle,
+  SubtitleStyleMode,
   Token,
   WhisperModelName,
 } from './types'
@@ -64,6 +71,21 @@ const cloneSegments = (segs: Segment[]): Segment[] =>
     caption: s.caption,
     tokens: s.tokens.map((t) => ({ ...t })),
   }))
+
+const getFontFamilyCss = (font: SubtitleFontFamily): string => {
+  switch (font) {
+    case 'pingfang':
+      return "'PingFang TC', 'PingFang SC', -apple-system, BlinkMacSystemFont, sans-serif"
+    case 'heiti':
+      return "'Heiti TC', 'Heiti SC', sans-serif"
+    case 'songti':
+      return "'Songti TC', 'Songti SC', 'STSong', serif"
+    case 'hiragino':
+      return "'Hiragino Sans GB', 'Hiragino Kaku Gothic ProN', sans-serif"
+    default:
+      return "'PingFang TC', sans-serif"
+  }
+}
 
 export default function App() {
   // Project & ASR State
@@ -102,6 +124,21 @@ export default function App() {
   const [isMuted, setIsMuted] = useState<boolean>(false)
   const [virtualCutPreview, setVirtualCutPreview] = useState<boolean>(true)
   const [showSubtitleOverlay, setShowSubtitleOverlay] = useState<boolean>(true)
+  const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>({
+    enabled: true,
+    font_family: 'pingfang',
+    font_size: 48,
+    text_color: '#FFFFFF',
+    style_mode: 'box',
+    box_opacity: 0.75,
+    outline_width: 3,
+    bottom_offset_pct: 8.0,
+  })
+  const [showSubtitleStylePanel, setShowSubtitleStylePanel] = useState<boolean>(false)
+  const [isDraggingSubtitle, setIsDraggingSubtitle] = useState<boolean>(false)
+  const isDraggingSubtitleRef = useRef<boolean>(false)
+  const [isRevealing, setIsRevealing] = useState<boolean>(false)
+  const videoContainerRef = useRef<HTMLDivElement | null>(null)
 
   // Modals & Busy States
   const [isLoadingDemo, setIsLoadingDemo] = useState<boolean>(false)
@@ -1651,13 +1688,13 @@ export default function App() {
     return { activeSeg, activeTokenId }
   }, [segments, currentTime])
 
-  // Module D: Export Video (VideoToolbox) + Remapped SRT
+  // Module D: Export Video (VideoToolbox) + Burn-in Subtitles
   const handleExport = async () => {
     if (!project) return
     setErrorBanner(null)
     setIsExporting(true)
     setStatusMessage(
-      '正在透過 Apple VideoToolbox 硬體加速編碼 MP4 (含 15ms 音訊防爆音淡入淡出) 並重算 SRT 時間軸...'
+      '正在透過 Apple VideoToolbox 硬體加速編碼 MP4 (含 15ms 音訊防爆音淡入淡出與字幕畫面燒錄)...'
     )
     try {
       const resp = await fetch('/api/export', {
@@ -1669,6 +1706,7 @@ export default function App() {
           padding: paddingSec,
           merge_gap: mergeGapSec,
           fade_ms: 15.0,
+          subtitle_style: subtitleStyle,
         }),
       })
       if (!resp.ok) {
@@ -1684,6 +1722,66 @@ export default function App() {
       setErrorBanner(err.message || '匯出影片時發生錯誤')
     } finally {
       setIsExporting(false)
+    }
+  }
+
+  // Handle Dragging Subtitle directly on Video Preview
+  const handleSubtitleMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!videoContainerRef.current) return
+    const containerRect = videoContainerRef.current.getBoundingClientRect()
+    const startY = e.clientY
+    const startBottomPct = subtitleStyle.bottom_offset_pct
+    isDraggingSubtitleRef.current = true
+    setIsDraggingSubtitle(true)
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      if (!isDraggingSubtitleRef.current) return
+      const deltaY = startY - moveEvent.clientY // Moving up increases bottom offset
+      const deltaPct = (deltaY / containerRect.height) * 100
+      const newPct = Math.max(3, Math.min(85, Math.round((startBottomPct + deltaPct) * 10) / 10))
+      setSubtitleStyle((prev) => ({ ...prev, bottom_offset_pct: newPct }))
+    }
+
+    const handleMouseUp = () => {
+      isDraggingSubtitleRef.current = false
+      setIsDraggingSubtitle(false)
+      window.removeEventListener('mousemove', handleMouseMove)
+      window.removeEventListener('mouseup', handleMouseUp)
+    }
+
+    window.addEventListener('mousemove', handleMouseMove)
+    window.addEventListener('mouseup', handleMouseUp)
+  }
+
+  // Download Exported MP4 directly via attachment (prevents page navigation & heartbeat termination)
+  const handleDownloadExport = () => {
+    if (!exportResult) return
+    const a = document.createElement('a')
+    a.href = exportResult.download_url
+    a.download = exportResult.filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+  }
+
+  // Reveal Exported Video in macOS Finder
+  const handleRevealInFinder = async () => {
+    if (!exportResult) return
+    setIsRevealing(true)
+    try {
+      const resp = await fetch(`/api/export/reveal/${encodeURIComponent(exportResult.filename)}`, {
+        method: 'POST',
+      })
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}))
+        throw new Error(err.detail || '無法在 Finder 中顯示')
+      }
+    } catch (err: any) {
+      alert(err.message || '無法在 Finder 中開啟檔案')
+    } finally {
+      setIsRevealing(false)
     }
   }
 
@@ -1868,19 +1966,10 @@ export default function App() {
         {/* Right Export Actions */}
         <div className="flex items-center gap-2 shrink-0">
           <button
-            onClick={handleInstantSrtDownload}
-            disabled={segments.length === 0}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1c2130] hover:bg-[#252c40] text-slate-200 text-xs font-medium border border-slate-700/80 transition disabled:opacity-40 shrink-0 whitespace-nowrap"
-            title="立即匯出重算時間軸後的 UTF-8 .srt 字幕檔"
-          >
-            <FileText className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-            <span>匯出 SRT</span>
-          </button>
-
-          <button
             onClick={handleExport}
             disabled={!project || segments.length === 0 || isExporting}
             className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-[#00d287] hover:bg-[#00bf7a] text-[#062419] font-bold text-xs shadow-md shadow-emerald-500/20 transition disabled:opacity-50 shrink-0 whitespace-nowrap"
+            title="以 Apple VideoToolbox 硬體加速導出並自動燒錄字幕"
           >
             {isExporting ? (
               <>
@@ -1895,12 +1984,12 @@ export default function App() {
                     } as React.CSSProperties
                   }
                 />
-                <span>匯出中...</span>
+                <span>正在硬體加速匯出...</span>
               </>
             ) : (
               <>
                 <Zap className="w-3.5 h-3.5 fill-current shrink-0" />
-                <span>匯出影片</span>
+                <span>匯出成品影片 (含字幕)</span>
               </>
             )}
           </button>
@@ -1989,7 +2078,7 @@ export default function App() {
       {/* MAIN DUAL-PANE WORKSPACE */}
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {/* LEFT PANE: NATIVE HTML5 VIDEO PLAYER + VIRTUAL TIMELINE MONITOR */}
-        <div className="w-[44%] min-w-[380px] max-w-[640px] bg-[#10131c] border-r border-slate-800/90 flex flex-col justify-between p-4 shrink-0">
+        <div className="w-[44%] min-w-[380px] max-w-[640px] bg-[#10131c] border-r border-slate-800/90 flex flex-col justify-between p-4 shrink-0 overflow-y-auto transcript-scroller">
           {/* Top Video Preview Header */}
           <div className="flex items-center justify-between mb-2.5">
             <div className="flex items-center gap-2">
@@ -2014,7 +2103,10 @@ export default function App() {
           </div>
 
           {/* Video Viewport Box */}
-          <div className="relative flex-1 bg-black rounded-xl overflow-hidden border border-slate-800/90 flex items-center justify-center shadow-2xl group">
+          <div
+            ref={videoContainerRef}
+            className="relative flex-1 bg-black rounded-xl overflow-hidden border border-slate-800/90 flex items-center justify-center shadow-2xl group select-none"
+          >
             {project ? (
               <>
                 <video
@@ -2027,46 +2119,106 @@ export default function App() {
                   playsInline
                 />
 
-                {/* Vrew-Style Live Broadcast Subtitle Overlay on Video */}
-                {showSubtitleOverlay && activePlaybackInfo.activeSeg && (() => {
+                {/* Subtitle Overlay with Live Dragging & Typography Matching */}
+                {showSubtitleOverlay && subtitleStyle.enabled && (() => {
                   const seg = activePlaybackInfo.activeSeg
-                  if (seg.caption !== undefined && seg.caption !== null) {
-                    if (!seg.caption.trim()) return null
-                    return (
-                      <div className="absolute bottom-6 inset-x-6 flex justify-center pointer-events-none">
-                        <div className="bg-black/80 backdrop-blur-md px-4 py-2 rounded-lg border border-white/10 shadow-lg max-w-[92%] text-center">
-                          <span className="text-white text-base md:text-lg font-bold tracking-wide">
-                            {seg.caption}
-                          </span>
-                        </div>
-                      </div>
-                    )
+                  let displayText = ''
+                  let keptWords: Token[] = []
+                  let isPreviewSample = false
+
+                  if (seg) {
+                    if (seg.caption !== undefined && seg.caption !== null) {
+                      displayText = seg.caption.trim()
+                    } else {
+                      keptWords = seg.tokens.filter((t) => !t.deleted && t.type === 'word')
+                      displayText = keptWords.map((t) => t.text).join('')
+                    }
                   }
 
-                  const keptWords = seg.tokens.filter((t) => !t.deleted && t.type === 'word')
-                  if (keptWords.length === 0) return null
+                  if (!displayText) {
+                    if (showSubtitleStylePanel || isDraggingSubtitle) {
+                      displayText = '點擊並上下拖曳此處可調整字幕位置'
+                      isPreviewSample = true
+                    } else {
+                      return null
+                    }
+                  }
+
+                  const fontFamilyCss = getFontFamilyCss(subtitleStyle.font_family)
+                  const outlineW = subtitleStyle.outline_width
+                  const isOutline = subtitleStyle.style_mode === 'outline'
+                  const isShadow = subtitleStyle.style_mode === 'shadow'
+                  const isBox = subtitleStyle.style_mode === 'box'
+
+                  let textShadowStyle: string | undefined = undefined
+                  if (isOutline) {
+                    textShadowStyle = `
+                      -${outlineW}px -${outlineW}px 0 #000,
+                       ${outlineW}px -${outlineW}px 0 #000,
+                      -${outlineW}px  ${outlineW}px 0 #000,
+                       ${outlineW}px  ${outlineW}px 0 #000,
+                       0px -${outlineW}px 0 #000,
+                       0px  ${outlineW}px 0 #000,
+                      -${outlineW}px  0px 0 #000,
+                       ${outlineW}px  0px 0 #000,
+                       0 2px 4px rgba(0,0,0,0.8)
+                    `
+                  } else if (isShadow) {
+                    textShadowStyle = '0 3px 6px rgba(0,0,0,0.95), 0 1px 2px rgba(0,0,0,0.9)'
+                  }
 
                   return (
-                    <div className="absolute bottom-6 inset-x-6 flex justify-center pointer-events-none">
-                      <div className="bg-black/80 backdrop-blur-md px-4 py-2 rounded-lg border border-white/10 shadow-lg max-w-[92%] text-center">
-                        <div className="flex flex-wrap items-center justify-center gap-0.5 text-base md:text-lg font-bold tracking-wide">
-                          {keptWords.map((tok) => {
-                            const isCurrent = tok.id === activePlaybackInfo.activeTokenId
-                            return (
-                              <span
-                                key={tok.id}
-                                className={
-                                  isCurrent
-                                    ? 'text-cyan-300 scale-105 transition-transform'
-                                    : 'text-white'
-                                }
-                              >
-                                {tok.text}
-                              </span>
-                            )
-                          })}
-                        </div>
+                    <div
+                      style={{ bottom: `${subtitleStyle.bottom_offset_pct}%` }}
+                      className="absolute inset-x-4 flex flex-col items-center justify-center pointer-events-auto transition-[bottom] duration-75"
+                    >
+                      <div
+                        onMouseDown={handleSubtitleMouseDown}
+                        style={{
+                          fontFamily: fontFamilyCss,
+                          color: subtitleStyle.text_color,
+                          textShadow: textShadowStyle,
+                          backgroundColor: isBox
+                            ? `rgba(0, 0, 0, ${subtitleStyle.box_opacity})`
+                            : 'transparent',
+                          fontSize: `${Math.max(13, Math.min(32, Math.round(subtitleStyle.font_size * 0.38)))}px`,
+                        }}
+                        className={`px-4 py-1.5 rounded-lg border border-white/10 shadow-lg max-w-[94%] text-center cursor-ns-resize hover:ring-2 hover:ring-cyan-400/60 transition select-none flex items-center gap-1.5 font-bold tracking-wide ${
+                          isDraggingSubtitle ? 'ring-2 ring-cyan-400 scale-[1.02]' : ''
+                        }`}
+                        title="按住滑鼠左鍵可上下拖曳調整字幕位置"
+                      >
+                        <span className="opacity-40 hover:opacity-100 text-xs select-none">⠿</span>
+                        {isPreviewSample ? (
+                          <span className="italic text-cyan-300/90">{displayText}</span>
+                        ) : seg && seg.caption !== undefined && seg.caption !== null ? (
+                          <span>{displayText}</span>
+                        ) : (
+                          <div className="flex flex-wrap items-center justify-center gap-0.5">
+                            {keptWords.map((tok) => {
+                              const isCurrent = tok.id === activePlaybackInfo.activeTokenId
+                              return (
+                                <span
+                                  key={tok.id}
+                                  className={
+                                    isCurrent
+                                      ? 'text-cyan-300 scale-105 transition-transform'
+                                      : ''
+                                  }
+                                >
+                                  {tok.text}
+                                </span>
+                              )
+                            })}
+                          </div>
+                        )}
                       </div>
+
+                      {(isDraggingSubtitle || showSubtitleStylePanel) && (
+                        <span className="mt-1 text-[10px] font-mono px-2 py-0.5 rounded bg-black/80 border border-slate-700 text-cyan-300 select-none shadow">
+                          垂直高度: {subtitleStyle.bottom_offset_pct.toFixed(1)}% (拖曳可調整)
+                        </span>
+                      )}
                     </div>
                   )
                 })()}
@@ -2234,8 +2386,245 @@ export default function App() {
                 >
                   CC 字幕
                 </button>
+
+                <button
+                  onClick={() => setShowSubtitleStylePanel((v) => !v)}
+                  className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition ${
+                    showSubtitleStylePanel
+                      ? 'bg-amber-500/25 border-amber-400 text-amber-200 shadow-sm'
+                      : 'bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-300'
+                  }`}
+                  title="自訂字幕字型、大小、顏色、垂直位置與底框/描邊樣式"
+                >
+                  <Type className="w-3.5 h-3.5 text-amber-400" />
+                  <span>字幕樣式</span>
+                </button>
               </div>
             </div>
+
+            {/* SUBTITLE CUSTOMIZATION DRAWER PANEL */}
+            {showSubtitleStylePanel && (
+              <div className="mt-3 p-3 bg-[#131826] border border-cyan-500/30 rounded-xl space-y-3 text-xs animate-in fade-in duration-150 shadow-xl">
+                <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                  <div className="flex items-center gap-1.5 font-bold text-slate-200">
+                    <Type className="w-4 h-4 text-cyan-400" />
+                    <span>字幕外觀與位置設定</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <label className="flex items-center gap-1.5 cursor-pointer text-slate-300 text-[11px]">
+                      <input
+                        type="checkbox"
+                        checked={subtitleStyle.enabled}
+                        onChange={(e) => setSubtitleStyle((s) => ({ ...s, enabled: e.target.checked }))}
+                        className="rounded accent-cyan-400"
+                      />
+                      <span>啟用字幕硬編碼燒錄</span>
+                    </label>
+                    <button
+                      onClick={() => setShowSubtitleStylePanel(false)}
+                      className="p-1 hover:bg-slate-800 rounded text-slate-400"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Controls Grid */}
+                <div className="grid grid-cols-2 gap-2.5">
+                  {/* Font Family */}
+                  <div>
+                    <label className="text-[11px] text-slate-400 block mb-1">字型選擇 (macOS 系統內建)</label>
+                    <select
+                      value={subtitleStyle.font_family}
+                      onChange={(e) =>
+                        setSubtitleStyle((s) => ({ ...s, font_family: e.target.value as SubtitleFontFamily }))
+                      }
+                      className="w-full bg-[#0c0e14] border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-400"
+                    >
+                      <option value="pingfang">蘋方體 (PingFang TC - 現代標準)</option>
+                      <option value="heiti">黑體 (Heiti TC - 硬朗俐落)</option>
+                      <option value="hiragino">冬青黑體 (Hiragino Sans)</option>
+                      <option value="songti">宋體/明體 (Songti - 優雅文藝)</option>
+                    </select>
+                  </div>
+
+                  {/* Font Size */}
+                  <div>
+                    <div className="flex justify-between items-center mb-1">
+                      <label className="text-[11px] text-slate-400">字體大小</label>
+                      <span className="font-mono text-cyan-400 font-semibold">{subtitleStyle.font_size}px</span>
+                    </div>
+                    <input
+                      type="range"
+                      min={28}
+                      max={72}
+                      step={2}
+                      value={subtitleStyle.font_size}
+                      onChange={(e) =>
+                        setSubtitleStyle((s) => ({ ...s, font_size: parseInt(e.target.value, 10) }))
+                      }
+                      className="w-full accent-cyan-400 cursor-pointer"
+                    />
+                  </div>
+                </div>
+
+                {/* Vertical Position */}
+                <div>
+                  <div className="flex justify-between items-center mb-1">
+                    <label className="text-[11px] text-slate-400">
+                      垂直位置 (離底部高度，亦可於畫面上直接拖曳)
+                    </label>
+                    <span className="font-mono text-cyan-400 font-semibold">{subtitleStyle.bottom_offset_pct.toFixed(1)}%</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <input
+                      type="range"
+                      min={3}
+                      max={85}
+                      step={0.5}
+                      value={subtitleStyle.bottom_offset_pct}
+                      onChange={(e) =>
+                        setSubtitleStyle((s) => ({
+                          ...s,
+                          bottom_offset_pct: parseFloat(e.target.value),
+                        }))
+                      }
+                      className="flex-1 accent-cyan-400 cursor-pointer"
+                    />
+                    {/* Preset quick buttons */}
+                    <div className="flex items-center gap-1 shrink-0">
+                      {[
+                        { label: '底部 (8%)', val: 8.0 },
+                        { label: '中下 (16%)', val: 16.0 },
+                        { label: '居中 (50%)', val: 50.0 },
+                        { label: '頂部 (80%)', val: 80.0 },
+                      ].map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() =>
+                            setSubtitleStyle((s) => ({ ...s, bottom_offset_pct: preset.val }))
+                          }
+                          className={`px-2 py-0.5 rounded text-[10px] font-medium border transition ${
+                            Math.abs(subtitleStyle.bottom_offset_pct - preset.val) < 1
+                              ? 'bg-cyan-500/30 border-cyan-400 text-cyan-200'
+                              : 'bg-slate-800 border-slate-700 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Style Mode & Colors */}
+                <div className="grid grid-cols-2 gap-2.5 pt-1 border-t border-slate-800/80">
+                  {/* Style Mode */}
+                  <div>
+                    <label className="text-[11px] text-slate-400 block mb-1">底框與外觀</label>
+                    <div className="flex items-center gap-1">
+                      {[
+                        { id: 'box', label: '半透明底框' },
+                        { id: 'outline', label: '黑邊描邊' },
+                        { id: 'shadow', label: '立體投影' },
+                      ].map((mode) => (
+                        <button
+                          key={mode.id}
+                          type="button"
+                          onClick={() =>
+                            setSubtitleStyle((s) => ({
+                              ...s,
+                              style_mode: mode.id as SubtitleStyleMode,
+                            }))
+                          }
+                          className={`flex-1 py-1 rounded text-center text-[11px] font-medium border transition ${
+                            subtitleStyle.style_mode === mode.id
+                              ? 'bg-cyan-500/25 border-cyan-400 text-cyan-200'
+                              : 'bg-[#0c0e14] border-slate-700 text-slate-400 hover:text-slate-200'
+                          }`}
+                        >
+                          {mode.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Text Color & Palette */}
+                  <div>
+                    <label className="text-[11px] text-slate-400 block mb-1">文字色彩</label>
+                    <div className="flex items-center gap-2">
+                      {['#FFFFFF', '#FFE600', '#00FFA3', '#38BDF8'].map((col) => (
+                        <button
+                          key={col}
+                          type="button"
+                          onClick={() => setSubtitleStyle((s) => ({ ...s, text_color: col }))}
+                          style={{ backgroundColor: col }}
+                          className={`w-6 h-6 rounded-full border-2 transition ${
+                            subtitleStyle.text_color.toUpperCase() === col.toUpperCase()
+                              ? 'border-white scale-110 shadow-md'
+                              : 'border-transparent opacity-80 hover:opacity-100'
+                          }`}
+                          title={col}
+                        />
+                      ))}
+                      <input
+                        type="color"
+                        value={subtitleStyle.text_color}
+                        onChange={(e) => setSubtitleStyle((s) => ({ ...s, text_color: e.target.value }))}
+                        className="w-7 h-7 rounded border border-slate-700 bg-transparent cursor-pointer p-0.5"
+                        title="自訂顏色"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Secondary controls based on style_mode */}
+                {subtitleStyle.style_mode === 'box' && (
+                  <div className="flex items-center justify-between text-[11px] pt-1">
+                    <span className="text-slate-400">底框不透明度：</span>
+                    <div className="flex items-center gap-2 flex-1 max-w-[200px]">
+                      <input
+                        type="range"
+                        min={0.3}
+                        max={1.0}
+                        step={0.05}
+                        value={subtitleStyle.box_opacity}
+                        onChange={(e) =>
+                          setSubtitleStyle((s) => ({ ...s, box_opacity: parseFloat(e.target.value) }))
+                        }
+                        className="flex-1 accent-cyan-400 cursor-pointer"
+                      />
+                      <span className="font-mono text-cyan-300 w-9 text-right font-semibold">
+                        {Math.round(subtitleStyle.box_opacity * 100)}%
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {subtitleStyle.style_mode === 'outline' && (
+                  <div className="flex items-center justify-between text-[11px] pt-1">
+                    <span className="text-slate-400">描邊粗細：</span>
+                    <div className="flex items-center gap-2 flex-1 max-w-[200px]">
+                      <input
+                        type="range"
+                        min={1}
+                        max={6}
+                        step={1}
+                        value={subtitleStyle.outline_width}
+                        onChange={(e) =>
+                          setSubtitleStyle((s) => ({ ...s, outline_width: parseInt(e.target.value, 10) }))
+                        }
+                        className="flex-1 accent-cyan-400 cursor-pointer"
+                      />
+                      <span className="font-mono text-cyan-300 w-9 text-right font-semibold">
+                        {subtitleStyle.outline_width}px
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         </div>
 
@@ -2945,27 +3334,31 @@ export default function App() {
         </div>
       </footer>
 
-      {/* EXPORT RESULT MODAL (MP4 + Remapped SRT + One-Click Bundle Download) */}
+      {/* EXPORT RESULT MODAL */}
       {exportResult && (
-        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-6 z-50">
-          <div className="bg-[#151925] border border-slate-700 rounded-2xl max-w-4xl w-full p-6 shadow-2xl space-y-5">
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm flex items-center justify-center p-6 z-50 animate-in fade-in duration-150">
+          <div className="bg-[#151925] border border-slate-700 rounded-2xl max-w-3xl w-full p-6 shadow-2xl space-y-5">
             <div className="flex items-center justify-between border-b border-slate-800 pb-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
-                  <Zap className="w-5 h-5" />
+                  <Film className="w-5 h-5" />
                 </div>
                 <div>
-                  <h3 className="text-base font-bold text-white">
-                    Apple VideoToolbox 硬體加速匯出完成！
+                  <h3 className="text-base font-bold text-white flex items-center gap-2">
+                    <span>🎬 成品影片匯出完成！</span>
+                    <span className="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-normal">
+                      已內嵌硬字幕
+                    </span>
                   </h3>
                   <p className="text-xs text-slate-400">
-                    已完成 H.264 15Mbps 硬體重新編碼、15ms 音訊接合防爆音處理與 SRT 時間軸重算
+                    已完成 Apple VideoToolbox 硬體編碼、15ms 音訊防爆音處理與字幕畫面燒錄
                   </p>
                 </div>
               </div>
               <button
                 onClick={() => setExportResult(null)}
                 className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300"
+                title="關閉並返回編輯"
               >
                 <X className="w-4 h-4" />
               </button>
@@ -2999,57 +3392,49 @@ export default function App() {
               </div>
             </div>
 
-            {/* Preview Exported Video & Remapped SRT side by side */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="bg-[#0c0e14] rounded-xl border border-slate-800 p-3 flex flex-col">
-                <span className="text-xs font-semibold text-slate-300 mb-2">
-                  🎬 匯出後 MP4 成品預覽
-                </span>
-                <video
-                  src={exportResult.mp4_url}
-                  controls
-                  className="w-full h-48 object-contain bg-black rounded-lg"
-                />
-              </div>
-
-              <div className="bg-[#0c0e14] rounded-xl border border-slate-800 p-3 flex flex-col">
-                <span className="text-xs font-semibold text-slate-300 mb-2">
-                  📝 重算時間軸後之 UTF-8 SRT 字幕預覽
-                </span>
-                <pre className="flex-1 h-48 overflow-y-auto transcript-scroller text-xs font-mono text-slate-300 bg-slate-950/70 p-3 rounded-lg whitespace-pre-wrap">
-                  {exportResult.srt_content || '(無字幕內容)'}
-                </pre>
-              </div>
+            {/* Preview Exported Video */}
+            <div className="bg-[#0c0e14] rounded-xl border border-slate-800 p-3 flex flex-col">
+              <span className="text-xs font-semibold text-slate-300 mb-2 flex items-center justify-between">
+                <span>🎬 成品播放預覽（字幕位置與樣式已完全嵌入影片中）</span>
+                <span className="text-[11px] font-mono text-slate-400">{exportResult.filename}</span>
+              </span>
+              <video
+                src={exportResult.mp4_url}
+                controls
+                autoPlay={false}
+                className="w-full max-h-72 object-contain bg-black rounded-lg"
+              />
             </div>
 
-            {/* Download Buttons */}
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <a
-                href={exportResult.srt_url}
-                download
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
+            {/* Download and Navigation Buttons */}
+            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
+              <button
+                onClick={() => setExportResult(null)}
+                className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
               >
-                <FileText className="w-4 h-4 text-emerald-400" />
-                <span>下載 .SRT 字幕檔</span>
-              </a>
+                <ArrowLeft className="w-4 h-4" />
+                <span>← 返回繼續編輯</span>
+              </button>
 
-              <a
-                href={exportResult.mp4_url}
-                download
-                className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
-              >
-                <Film className="w-4 h-4 text-cyan-400" />
-                <span>下載粗剪 .MP4</span>
-              </a>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={handleRevealInFinder}
+                  disabled={isRevealing}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition disabled:opacity-50"
+                  title="在 macOS Finder 中標記定位此檔案"
+                >
+                  <Folder className="w-4 h-4 text-amber-400" />
+                  <span>{isRevealing ? '正在開啟 Finder...' : '在 Finder 中顯示'}</span>
+                </button>
 
-              <a
-                href={exportResult.bundle_url}
-                download
-                className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-cyan-500 to-indigo-500 hover:from-cyan-400 hover:to-indigo-400 text-slate-950 font-bold text-xs shadow-lg shadow-cyan-500/25 transition"
-              >
-                <Download className="w-4 h-4" />
-                <span>一鍵打包下載 (MP4 + SRT .zip) 供匯入剪映</span>
-              </a>
+                <button
+                  onClick={handleDownloadExport}
+                  className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-500 to-cyan-500 hover:from-emerald-400 hover:to-cyan-400 text-slate-950 font-bold text-sm shadow-lg shadow-emerald-500/25 transition"
+                >
+                  <Download className="w-4 h-4" />
+                  <span>⬇️ 下載成品影片 (.MP4)</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>

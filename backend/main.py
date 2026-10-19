@@ -264,6 +264,7 @@ def export_project(req: ExportRequest) -> ExportResponse:
             merge_gap=req.merge_gap,
             fade_ms=req.fade_ms,
             total_duration=project.duration,
+            subtitle_style=req.subtitle_style,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -277,6 +278,8 @@ def export_project(req: ExportRequest) -> ExportResponse:
     return ExportResponse(
         export_id=export_id,
         mp4_url=f"/media/exports/{mp4_name}",
+        download_url=f"/api/download/{mp4_name}",
+        filename=mp4_name,
         srt_url=f"/media/exports/{srt_name}",
         bundle_url=f"/media/exports/{zip_name}",
         srt_content=res["srt_content"],
@@ -286,6 +289,40 @@ def export_project(req: ExportRequest) -> ExportResponse:
         saved_seconds=res["saved_seconds"],
         cut_count=res["cut_count"],
     )
+
+
+@app.get("/api/download/{filename}")
+def download_export_file(filename: str):
+    """
+    透過 Content-Disposition: attachment 提供直接下載，
+    避免瀏覽器在當前頁籤直接導航播放影片而中斷編輯狀態或觸發 heartbeat_leave。
+    """
+    safe_filename = Path(filename).name
+    file_path = EXPORTS_DIR / safe_filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="檔案不存在或尚未產生")
+    return FileResponse(
+        path=str(file_path),
+        filename=safe_filename,
+        media_type="application/octet-stream",
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+    )
+
+
+@app.post("/api/export/reveal/{filename}")
+def reveal_in_finder(filename: str):
+    """
+    在 macOS Finder 中直接標記定位剛匯出的檔案
+    """
+    safe_filename = Path(filename).name
+    file_path = EXPORTS_DIR / safe_filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="檔案不存在")
+    try:
+        subprocess.run(["open", "-R", str(file_path)], check=True)
+        return {"status": "ok"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"無法在 Finder 中開啟: {e}")
 
 
 @app.post("/api/demo", response_model=ProjectMetadata)
