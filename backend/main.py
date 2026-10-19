@@ -56,16 +56,26 @@ def _project_json_path(project_id: str) -> Path:
 
 
 def _save_project(meta: ProjectMetadata) -> None:
-    _project_json_path(meta.project_id).write_text(
-        meta.model_dump_json(indent=2), encoding="utf-8"
-    )
+    target = _project_json_path(meta.project_id)
+    tmp_path = target.with_suffix(f".{uuid.uuid4().hex[:6]}.tmp")
+    tmp_path.write_text(meta.model_dump_json(indent=2), encoding="utf-8")
+    tmp_path.replace(target)
 
 
 def _load_project(project_id: str) -> ProjectMetadata:
     p = _project_json_path(project_id)
     if not p.exists():
         raise HTTPException(status_code=404, detail=f"找不到專案 {project_id}")
-    return ProjectMetadata.model_validate_json(p.read_text(encoding="utf-8"))
+    content = p.read_text(encoding="utf-8").strip()
+    if not content:
+        # 自 demo_assets 自癒恢復
+        demo_src = BASE_DIR / "demo_assets" / f"{project_id}.json"
+        if demo_src.exists():
+            content = demo_src.read_text(encoding="utf-8").strip()
+            p.write_text(content, encoding="utf-8")
+        else:
+            raise HTTPException(status_code=500, detail=f"專案檔案為空或損毀: {project_id}")
+    return ProjectMetadata.model_validate_json(content)
 
 
 def _find_video_file(project_id: str) -> Path:
@@ -229,14 +239,21 @@ def create_demo_project(
         shutil.copy2(demo_assets_dir / f"{project_id}.json", json_path)
 
     if not force and dest_mp4.exists() and json_path.exists():
-        cached = _load_project(project_id)
-        if cached.segments:
-            for seg in cached.segments:
-                for tok in seg.tokens:
-                    tok.deleted = False
-                    tok.keep_duration = None
-            _save_project(cached)
-            return cached
+        try:
+            cached = _load_project(project_id)
+            if cached.segments:
+                # 記憶體內重置刪除狀態，免重複寫入硬碟避免並發競態
+                for seg in cached.segments:
+                    for tok in seg.tokens:
+                        tok.deleted = False
+                        tok.keep_duration = None
+                return cached
+        except Exception:
+            # 檔案損毀時自動從 demo_assets 覆蓋修復
+            demo_json = demo_assets_dir / f"{project_id}.json"
+            if demo_json.exists():
+                shutil.copy2(demo_json, json_path)
+                return _load_project(project_id)
 
     if not dest_mp4.exists():
         _generate_sample_mandarin_video(str(dest_mp4))

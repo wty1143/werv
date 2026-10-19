@@ -315,7 +315,10 @@ export default function App() {
     }
   }, [])
 
+  const hasInitialDemoLoadedRef = useRef(false)
   useEffect(() => {
+    if (hasInitialDemoLoadedRef.current) return
+    hasInitialDemoLoadedRef.current = true
     handleLoadDemo()
   }, [handleLoadDemo])
 
