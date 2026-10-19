@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+APP_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+PARENT_DIR="$(cd "$APP_DIR/.." && pwd)"
+
+TARGET_DIR=""
+if [ -f "$PARENT_DIR/start.sh" ]; then
+  TARGET_DIR="$PARENT_DIR"
+elif [ -d "$HOME/workspace/werv" ] && [ -f "$HOME/workspace/werv/start.sh" ]; then
+  TARGET_DIR="$HOME/workspace/werv"
+elif [ -d "$HOME/werv" ] && [ -f "$HOME/werv/start.sh" ]; then
+  TARGET_DIR="$HOME/werv"
+else
+  # Auto-search in home directory
+  SEARCH_RESULT=$(find "$HOME" -maxdepth 4 -name "start.sh" -path "*/werv/start.sh" 2>/dev/null | head -n 1)
+  if [ -n "$SEARCH_RESULT" ]; then
+    TARGET_DIR="$(dirname "$SEARCH_RESULT")"
+  else
+    TARGET_DIR="$PARENT_DIR"
+  fi
+fi
+
+osascript -e "tell application \"Terminal\"" \
+          -e "activate" \
+          -e "do script \"cd '$TARGET_DIR' && ./start.sh\"" \
+          -e "end tell"
