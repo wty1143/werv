@@ -322,6 +322,38 @@ export default function App() {
     handleLoadDemo()
   }, [handleLoadDemo])
 
+  // 網頁分頁心跳與離開自動退出機制（當使用者關閉分頁時，伺服器自動安全關閉）
+  useEffect(() => {
+    const sendHeartbeat = () => {
+      fetch('/api/heartbeat', { method: 'POST', keepalive: true }).catch(() => {})
+    }
+
+    sendHeartbeat()
+    const interval = setInterval(sendHeartbeat, 3000)
+
+    const handleLeave = () => {
+      if (navigator.sendBeacon) {
+        navigator.sendBeacon('/api/heartbeat/leave')
+      } else {
+        fetch('/api/heartbeat/leave', { method: 'POST', keepalive: true }).catch(() => {})
+      }
+    }
+
+    window.addEventListener('pagehide', handleLeave)
+    window.addEventListener('beforeunload', handleLeave)
+    const handleVisibility = () => {
+      if (!document.hidden) sendHeartbeat()
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('pagehide', handleLeave)
+      window.removeEventListener('beforeunload', handleLeave)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [])
+
   // Upload local video file + run ASR
   const handleFileUpload = async (file: File) => {
     setErrorBanner(null)

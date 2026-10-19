@@ -178,8 +178,13 @@ cleanup() {
   echo ""
   echo "正在關閉 Werv 前後端服務..."
   kill $BACKEND_PID $FRONTEND_PID 2>/dev/null || true
+  # 若是專用 Werv 視窗，自動為使用者關閉終端機視窗免去手動操作
+  osascript -e 'tell application "Terminal" to close (every window whose name contains "Werv Studio")' 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
+
+# 設定終端機視窗標題
+echo -ne "\033]0;Werv Studio\007"
 
 # 6. 啟動後端與前端
 echo "▶ 啟動 FastAPI 後端服務 (http://127.0.0.1:8000)..."
@@ -198,11 +203,15 @@ echo "========================================================"
 echo "✅ Werv Studio 啟動成功！"
 echo "👉 瀏覽器即將自動開啟：http://localhost:5173"
 echo "========================================================"
-echo "💡 提示：按 Ctrl + C 即可關閉程式"
+echo "💡 提示：使用完畢後直接「關閉瀏覽器分頁」，伺服器與終端機將自動退出！"
+echo "        （亦可在此按 Ctrl + C 手動退出）"
 echo ""
 
 # 自動開啟瀏覽器
 sleep 1
 open "http://localhost:5173" 2>/dev/null || true
 
-wait
+# 等待後端結束（當使用者在瀏覽器關閉網頁，後端會自動觸發退出）
+wait $BACKEND_PID 2>/dev/null || true
+echo "👋 偵測到瀏覽器分頁已關閉，Werv Studio 已安全退出。下次見！"
+cleanup

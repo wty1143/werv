@@ -1,11 +1,14 @@
 import json
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -88,6 +91,77 @@ def _find_video_file(project_id: str) -> Path:
 @app.get("/api/health")
 def health_check() -> Dict[str, str]:
     return {"status": "ok", "engine": "mlx-whisper + silero-vad + videotoolbox"}
+
+
+# ==============================================================================
+# 瀏覽器分頁心跳與自動退出機制
+# 當使用者關閉瀏覽器網頁時，自動結束後端與前端伺服器，免手動關閉終端機
+# ==============================================================================
+_last_heartbeat_time = time.time()
+_has_received_heartbeat = False
+_shutdown_timer: Optional[threading.Timer] = None
+_shutdown_lock = threading.Lock()
+
+
+def _perform_graceful_shutdown() -> None:
+    print("\n========================================================")
+    print("👋 [Werv] 偵測到瀏覽器分頁已關閉，正在安全退出前後端服務...")
+    print("========================================================\n")
+    try:
+        os.kill(os.getpid(), signal.SIGINT)
+    except Exception:
+        os._exit(0)
+
+
+def _schedule_shutdown(delay: float = 4.0) -> None:
+    global _shutdown_timer
+    with _shutdown_lock:
+        if _shutdown_timer is not None:
+            _shutdown_timer.cancel()
+        _shutdown_timer = threading.Timer(delay, _perform_graceful_shutdown)
+        _shutdown_timer.daemon = True
+        _shutdown_timer.start()
+
+
+def _cancel_shutdown() -> None:
+    global _shutdown_timer
+    with _shutdown_lock:
+        if _shutdown_timer is not None:
+            _shutdown_timer.cancel()
+            _shutdown_timer = None
+
+
+def _heartbeat_watchdog() -> None:
+    """守門線程：初次收到心跳後，若超過 25 秒毫無心跳（瀏覽器崩潰/強制退出），自動退出。"""
+    time.sleep(30)
+    while True:
+        time.sleep(3)
+        if _has_received_heartbeat:
+            elapsed = time.time() - _last_heartbeat_time
+            if elapsed > 25.0:
+                _perform_graceful_shutdown()
+                break
+
+
+_watchdog_thread = threading.Thread(target=_heartbeat_watchdog, daemon=True)
+_watchdog_thread.start()
+
+
+@app.post("/api/heartbeat")
+def heartbeat() -> Dict[str, str]:
+    global _last_heartbeat_time, _has_received_heartbeat
+    _last_heartbeat_time = time.time()
+    _has_received_heartbeat = True
+    _cancel_shutdown()
+    return {"status": "alive"}
+
+
+@app.post("/api/heartbeat/leave")
+def heartbeat_leave() -> Dict[str, str]:
+    # 收到分頁關閉信號（來自 pagehide / beforeunload 的 sendBeacon）
+    # 給予 4 秒緩衝（防止使用者只是按了 F5/⌘R 重新整理頁面）
+    _schedule_shutdown(delay=4.0)
+    return {"status": "scheduled_shutdown"}
 
 
 @app.post("/api/upload", response_model=ProjectMetadata)
