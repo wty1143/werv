@@ -82,28 +82,50 @@ class DiagnosticSuite:
     def check_system(self):
         mac_ver = platform.mac_ver()[0]
         arch = platform.machine()
-        chip = platform.processor()
+        
+        # 獲取晶片型號 (例如 Apple M1 / Apple M2)
+        chip_model = "Apple Silicon"
+        try:
+            res = subprocess.run(["sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True)
+            if res.returncode == 0 and res.stdout.strip():
+                chip_model = res.stdout.strip()
+        except Exception:
+            pass
 
         self.results["system"] = {
             "macos_version": mac_ver,
             "architecture": arch,
-            "processor": chip,
+            "chip_model": chip_model,
             "uname": platform.uname()._asdict(),
         }
+
+        # 檢查晶片架構
+        if arch == "arm64":
+            self._log_status("system", f"Apple 晶片架構 ({chip_model})", "PASS")
+        else:
+            self._log_status(
+                "system",
+                f"架構: {arch}",
+                "FAIL",
+                f"偵測到非 arm64 原生模式 ({arch})！若此台為 M1/M2，終端機可能被以 Rosetta 轉譯模式啟動，將導致 Metal/VideoToolbox 失效！",
+            )
+            self.results["recommendations"].append(
+                "終端機架構錯誤：請在應用程式中找到終端機 (Terminal)，按「取得資訊」，取消勾選「使用 Rosetta 打開」。"
+            )
 
         # 檢查 macOS 版本
         if mac_ver:
             try:
                 major, minor = [int(x) for x in mac_ver.split(".")[:2]]
-                if major < 13 or (major == 13 and minor < 5):
+                if major < 14:
                     self._log_status(
                         "system",
                         f"macOS 版本: {mac_ver}",
                         "WARN",
-                        "macOS 版本低於 13.5 (Ventura)，MLX Metal 硬體加速可能無法編譯，強烈建議升級至 macOS 14+ (Sonoma) 或 15+ (Sequoia)",
+                        f"macOS {mac_ver} 較舊。MLX Whisper 的 Metal 著色器需要 macOS 14+ (Sonoma) 或 15+ (Sequoia) 才能穩定編譯，否則語音辨識會崩潰。",
                     )
                     self.results["recommendations"].append(
-                        "系統升級：目前的 macOS 核心太舊，MLX 與 Metal 運算需要 macOS >= 13.5。請至系統設定檢查 macOS 更新。"
+                        f"系統升級：M1 硬體完全相容，但目前的 macOS {mac_ver} 核心過舊。請至「系統設定」升級至 macOS 14+ (Sonoma) 或 15+ (Sequoia)。"
                     )
                 else:
                     self._log_status("system", f"macOS 版本: {mac_ver}", "PASS")
@@ -111,20 +133,6 @@ class DiagnosticSuite:
                 self._log_status("system", f"macOS 版本: {mac_ver}", "PASS")
         else:
             self._log_status("system", "macOS 平台偵測", "WARN", "非 macOS 或無法讀取版本號")
-
-        # 檢查晶片架構
-        if arch == "arm64":
-            self._log_status("system", "Apple Silicon 架構 (arm64)", "PASS")
-        else:
-            self._log_status(
-                "system",
-                f"架構: {arch}",
-                "WARN",
-                "偵測到非 arm64 (可能是 Intel Mac 或 Rosetta 轉譯模式)。MLX 僅支援 Apple Silicon 原生 arm64。",
-            )
-            self.results["recommendations"].append(
-                "架構提示：若本機為 Apple Silicon，請勿使用 Rosetta 啟動終端機，需確保在原生 arm64 模式下運行。"
-            )
 
     def check_python_environment(self):
         v = sys.version_info
@@ -268,34 +276,22 @@ class DiagnosticSuite:
             stdout = enc_proc.stdout
 
             has_vt = "h264_videotoolbox" in stdout
-            has_x264 = "libx264" in stdout
             has_aac = "aac" in stdout
 
             self.results["ffmpeg"]["has_videotoolbox"] = has_vt
-            self.results["ffmpeg"]["has_libx264"] = has_x264
             self.results["ffmpeg"]["has_aac"] = has_aac
 
             if has_vt:
-                self._log_status("ffmpeg", "編碼器 h264_videotoolbox (硬體加速)", "PASS")
+                self._log_status("ffmpeg", "Apple VideoToolbox 硬體編碼 (h264_videotoolbox)", "PASS")
             else:
                 self._log_status(
                     "ffmpeg",
-                    "編碼器 h264_videotoolbox (硬體加速)",
-                    "WARN",
-                    "此 FFmpeg 版本未啟用 videotoolbox 硬體加速，將自動降級至 libx264",
-                )
-
-            if has_x264:
-                self._log_status("ffmpeg", "編碼器 libx264 (軟體通用備援)", "PASS")
-            else:
-                self._log_status(
-                    "ffmpeg",
-                    "編碼器 libx264 (軟體通用備援)",
+                    "Apple VideoToolbox 硬體編碼 (h264_videotoolbox)",
                     "FAIL",
-                    "FFmpeg 缺少 libx264，當 VideoToolbox 失敗時將無備援編碼器可用！",
+                    "此 FFmpeg 版本未啟用 Apple VideoToolbox 硬體加速！M1/M2 需具備 videotoolbox。",
                 )
                 self.results["recommendations"].append(
-                    "重新安裝完整 FFmpeg：請執行 `brew reinstall ffmpeg` 以獲得完整編碼器支援"
+                    "修復 FFmpeg：目前的 FFmpeg 未開啟 Apple VideoToolbox。請執行 `brew reinstall ffmpeg` 以取得官方原生 Apple Silicon 支援。"
                 )
 
             if has_aac:

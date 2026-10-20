@@ -436,7 +436,6 @@ def get_system_diagnostics():
     try:
         enc_res = subprocess.run([FFMPEG_BIN, "-encoders"], capture_output=True, text=True, timeout=3)
         report["has_videotoolbox"] = "h264_videotoolbox" in enc_res.stdout
-        report["has_libx264"] = "libx264" in enc_res.stdout
     except Exception as e:
         report["ffmpeg_check_error"] = str(e)
 

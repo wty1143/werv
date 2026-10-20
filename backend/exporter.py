@@ -562,7 +562,7 @@ def export_video_and_srt(
         f_script.write(filter_graph)
         script_path = f_script.name
 
-    def _build_cmd(filter_flag: str, filter_val: str, vcodec: str) -> List[str]:
+    def _build_cmd(filter_flag: str, filter_val: str) -> List[str]:
         cmd = [
             FFMPEG_BIN,
             "-y",
@@ -578,13 +578,12 @@ def export_video_and_srt(
             "[outv]",
             "-map",
             "[outa]",
-        ])
-        if vcodec == "h264_videotoolbox":
-            cmd.extend(["-c:v", "h264_videotoolbox", "-b:v", "15M", "-pix_fmt", "yuv420p"])
-        else:
-            cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"])
-
-        cmd.extend([
+            "-c:v",
+            "h264_videotoolbox",
+            "-b:v",
+            "15M",
+            "-pix_fmt",
+            "yuv420p",
             "-c:a",
             "aac",
             "-b:a",
@@ -597,40 +596,30 @@ def export_video_and_srt(
 
     try:
         proc = None
-        last_stderr = ""
-        # 1. 優先使用 Apple VideoToolbox 硬體加速，失敗時自動無縫降級至 libx264 軟體編碼
-        encoders_to_try = ["h264_videotoolbox", "libx264"]
+        if len(keep_ranges) > 50 or has_subtitles:
+            # 優先嘗試 FFmpeg 7+ 的 -/filter_complex
+            cmd = _build_cmd("-/filter_complex", script_path)
+            logger.debug("執行 FFmpeg (VideoToolbox) -/filter_complex: %s", " ".join(cmd))
+            proc = subprocess.run(cmd, capture_output=True, text=True)
 
-        for enc in encoders_to_try:
-            if len(keep_ranges) > 50 or has_subtitles:
-                # 首先嘗試 -/filter_complex (FFmpeg 7+)
-                cmd = _build_cmd("-/filter_complex", script_path, enc)
-                logger.debug("嘗試 FFmpeg (%s) -/filter_complex: %s", enc, " ".join(cmd))
+            # 若舊版 FFmpeg (< 7.0) 不認得 -/filter_complex，退回嘗試 -filter_complex_script
+            if proc.returncode != 0 and ("Unrecognized option" in proc.stderr or "filter_complex" in proc.stderr):
+                logger.warning("FFmpeg -/filter_complex 未識別，切換嘗試 -filter_complex_script 舊版語法...")
+                cmd = _build_cmd("-filter_complex_script", script_path)
                 proc = subprocess.run(cmd, capture_output=True, text=True)
-
-                # 若舊版 FFmpeg 不支援 -/filter_complex，退回嘗試 -filter_complex_script
-                if proc.returncode != 0:
-                    logger.warning("FFmpeg -/filter_complex (%s) 失敗 (code %d)，嘗試 -filter_complex_script...", enc, proc.returncode)
-                    cmd = _build_cmd("-filter_complex_script", script_path, enc)
-                    proc = subprocess.run(cmd, capture_output=True, text=True)
-            else:
-                cmd = _build_cmd("-filter_complex", filter_graph, enc)
-                logger.debug("嘗試 FFmpeg (%s) -filter_complex: %s", enc, " ".join(cmd))
-                proc = subprocess.run(cmd, capture_output=True, text=True)
-
-            if proc.returncode == 0:
-                if enc != "h264_videotoolbox":
-                    logger.warning("注意：此 Mac 環境不支援 h264_videotoolbox 硬體編碼，已自動降級使用 libx264 軟體編碼完成！")
-                else:
-                    logger.info("Apple VideoToolbox 硬體編碼成功！")
-                break
-            else:
-                last_stderr = proc.stderr
-                logger.warning("FFmpeg 編碼器 [%s] 失敗 (code %d): %s", enc, proc.returncode, proc.stderr[-400:])
+        else:
+            cmd = _build_cmd("-filter_complex", filter_graph)
+            logger.debug("執行 FFmpeg (VideoToolbox) -filter_complex: %s", " ".join(cmd))
+            proc = subprocess.run(cmd, capture_output=True, text=True)
 
         if proc is None or proc.returncode != 0:
-            logger.error("FFmpeg 所有編碼器嘗試皆失敗！詳細錯誤訊息:\n%s", last_stderr)
-            raise RuntimeError(f"FFmpeg 匯出失敗 (已嘗試 VideoToolbox 與 libx264): {last_stderr[-800:]}")
+            err_output = proc.stderr if proc else "無法取得 FFmpeg 執行程序"
+            cmd_str = " ".join(cmd) if cmd else ""
+            logger.error("FFmpeg VideoToolbox 匯出失敗 (exit code: %s)!\n執行指令: %s\n完整 Stderr 輸出:\n%s",
+                         getattr(proc, "returncode", "N/A"), cmd_str, err_output)
+            raise RuntimeError(f"FFmpeg VideoToolbox 匯出失敗 (exit code {getattr(proc, 'returncode', 'N/A')}): {err_output[-1000:]}")
+        else:
+            logger.info("Apple VideoToolbox 硬體編碼匯出成功！")
     finally:
         if os.path.exists(script_path):
             os.remove(script_path)
