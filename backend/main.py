@@ -10,10 +10,12 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+
+from .logger import get_logger
 
 from .asr_engine import (
     FFMPEG_BIN,
@@ -48,6 +50,24 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger = get_logger("werv.api")
+
+
+@app.middleware("http")
+async def log_requests_middleware(request: Request, call_next):
+    start_time = time.time()
+    try:
+        response = await call_next(request)
+        process_time = (time.time() - start_time) * 1000
+        # 避免頻繁 heartbeat 洗版
+        if not request.url.path.startswith("/api/heartbeat"):
+            logger.info("%s %s -> %s (%.1fms)", request.method, request.url.path, response.status_code, process_time)
+        return response
+    except Exception as exc:
+        process_time = (time.time() - start_time) * 1000
+        logger.exception("請求失敗: %s %s (%.1fms): %s", request.method, request.url.path, process_time, exc)
+        raise exc
 
 # Mount static directories (Starlette StaticFiles supports HTTP Range requests for video seeking)
 app.mount("/media/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
@@ -253,6 +273,15 @@ def export_project(req: ExportRequest) -> ExportResponse:
     srt_path = EXPORTS_DIR / srt_name
     zip_path = EXPORTS_DIR / zip_name
 
+    logger.info(
+        "開始匯出影片: project_id=%s, input=%s, segments=%d, subtitle_enabled=%s, style=%s",
+        req.project_id,
+        video_path.name,
+        len(req.segments),
+        req.subtitle_style.enabled,
+        req.subtitle_style.style_mode,
+    )
+
     try:
         res = export_video_and_srt(
             input_video_path=str(video_path),
@@ -266,9 +295,12 @@ def export_project(req: ExportRequest) -> ExportResponse:
             total_duration=project.duration,
             subtitle_style=req.subtitle_style,
         )
+        logger.info("影片匯出成功: %s, 導出長度=%.2fs, 節省=%.2fs", mp4_name, res["exported_duration"], res["saved_seconds"])
     except ValueError as e:
+        logger.warning("匯出參數錯誤: %s", e)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        logger.exception("匯出處理發生例外錯誤: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
 
     # Persist latest edited segments
@@ -339,6 +371,84 @@ def open_in_default_player(filename: str):
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"無法開啟檔案: {e}")
+
+
+@app.get("/api/system/logs")
+def get_system_logs(lines: int = 200):
+    """
+    取得後端最近日誌 (預設 200 行)，供前端除錯面板或 AI agent 檢查環境錯誤
+    """
+    from .logger import LOG_FILE
+    if not LOG_FILE.exists():
+        return {"logs": "(尚無日誌檔案，服務可能剛啟動)", "log_file": str(LOG_FILE), "total_lines": 0}
+    try:
+        content = LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+        tail = content[-max(1, min(lines, 2000)):]
+        return {
+            "logs": "\n".join(tail),
+            "total_lines": len(content),
+            "log_file": str(LOG_FILE),
+        }
+    except Exception as e:
+        return {"error": str(e), "log_file": str(LOG_FILE)}
+
+
+@app.get("/api/system/diagnostics")
+def get_system_diagnostics():
+    """
+    執行輕量自我診斷，供 AI agent (如 Jetski) 或開發者掌握另一台電腦的環境相容性
+    """
+    import platform
+    import sys
+    from .asr_engine import FFMPEG_BIN, FFPROBE_BIN
+
+    report = {
+        "os_version": platform.mac_ver()[0] or platform.platform(),
+        "arch": platform.machine(),
+        "python_version": sys.version,
+        "python_bin": sys.executable,
+        "ffmpeg_bin": FFMPEG_BIN,
+        "ffprobe_bin": FFPROBE_BIN,
+        "ffmpeg_exists": os.path.exists(FFMPEG_BIN),
+    }
+
+    # 1. 測試 MLX 與 Metal 加速
+    try:
+        import mlx.core as mx
+        a = mx.array([1, 2, 3])
+        _ = (a * 2).tolist()
+        report["mlx_metal_status"] = "OK"
+        report["mlx_version"] = getattr(mx, "__version__", "installed")
+    except Exception as e:
+        report["mlx_metal_status"] = f"FAIL: {e}"
+
+    # 2. 測試 PyTorch 與 Silero VAD
+    try:
+        import torch
+        import silero_vad
+        report["torch_status"] = "OK"
+        report["torch_version"] = torch.__version__
+        report["mps_available"] = torch.backends.mps.is_available()
+    except Exception as e:
+        report["torch_status"] = f"FAIL: {e}"
+
+    # 3. 測試 FFmpeg 編碼器支援
+    try:
+        enc_res = subprocess.run([FFMPEG_BIN, "-encoders"], capture_output=True, text=True, timeout=3)
+        report["has_videotoolbox"] = "h264_videotoolbox" in enc_res.stdout
+        report["has_libx264"] = "libx264" in enc_res.stdout
+    except Exception as e:
+        report["ffmpeg_check_error"] = str(e)
+
+    # 4. 測試字型載入
+    try:
+        from .exporter import load_macos_font
+        font = load_macos_font("songti", 48)
+        report["songti_font"] = str(font.getname())
+    except Exception as e:
+        report["font_load_error"] = str(e)
+
+    return report
 
 
 @app.post("/api/demo", response_model=ProjectMetadata)

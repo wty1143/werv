@@ -174,6 +174,8 @@ if [ ! -d "$ROOT_DIR/frontend/node_modules" ]; then
 fi
 
 # 5. 清理並退出處理
+IS_ERROR_EXIT=0
+
 cleanup() {
   echo ""
   echo "正在關閉 Werv 前後端服務..."
@@ -184,41 +186,45 @@ cleanup() {
   pkill -f "vite.*5173" 2>/dev/null || true
   sleep 0.2
 
-  # 非同步在背景關閉終端機視窗，避免腳本仍在運行中引發 macOS「是否終止下列程序」確認彈窗
-  (
-    sleep 0.4
-    osascript -e 'tell application "Terminal"
-      set targetWindows to (every window whose name contains "Werv Studio")
-      repeat with w in targetWindows
-        close w saving no
-      end repeat
-      if (count of windows) = 0 then
-        quit
-      end if
-    end tell' 2>/dev/null &
-  ) &
+  # 正常關閉分頁時，自動關閉終端機；若為異常出錯退出，保留終端機供開發者/AI 調查
+  if [ "$IS_ERROR_EXIT" = "0" ]; then
+    (
+      sleep 0.4
+      osascript -e 'tell application "Terminal"
+        set targetWindows to (every window whose name contains "Werv Studio")
+        repeat with w in targetWindows
+          close w saving no
+        end repeat
+        if (count of windows) = 0 then
+          quit
+        end if
+      end tell' 2>/dev/null &
+    ) &
+  fi
 }
 trap cleanup EXIT INT TERM
 
 # 設定終端機視窗標題
 echo -ne "\033]0;Werv Studio\007"
 
-# 6. 啟動後端與前端
+# 建立集中日誌目錄
+mkdir -p "$ROOT_DIR/logs"
+
+# 6. 啟動後端與前端 (同步輸出至 logs/ 以供除錯)
 echo "▶ 啟動 FastAPI 後端服務 (http://127.0.0.1:8000)..."
-"$ROOT_DIR/.venv/bin/uvicorn" backend.main:app --host 127.0.0.1 --port 8000 &
+"$ROOT_DIR/.venv/bin/uvicorn" backend.main:app --host 127.0.0.1 --port 8000 2>&1 | tee -a "$ROOT_DIR/logs/backend.log" &
 BACKEND_PID=$!
 
 echo "▶ 啟動 React + Vite 前端介面 (http://localhost:5173)..."
-cd "$ROOT_DIR/frontend"
-npm run dev -- --port 5173 &
+(cd "$ROOT_DIR/frontend" && npm run dev -- --port 5173 2>&1 | tee -a "$ROOT_DIR/logs/frontend.log") &
 FRONTEND_PID=$!
-cd "$ROOT_DIR"
 
 sleep 2
 echo ""
 echo "========================================================"
 echo "✅ Werv Studio 啟動成功！"
 echo "👉 瀏覽器即將自動開啟：http://localhost:5173"
+echo "📁 集中日誌路徑：$ROOT_DIR/logs/backend.log"
 echo "========================================================"
 echo "💡 提示：使用完畢後直接「關閉瀏覽器分頁」，伺服器與終端機將自動退出！"
 echo "        （亦可在此按 Ctrl + C 手動退出）"
@@ -228,8 +234,23 @@ echo ""
 sleep 1
 open "http://localhost:5173" 2>/dev/null || true
 
-# 等待後端結束（當使用者在瀏覽器關閉網頁，後端會自動觸發退出）
-wait $BACKEND_PID 2>/dev/null || true
-echo "👋 偵測到瀏覽器分頁已關閉，Werv Studio 已安全退出。下次見！"
+# 等待後端結束
+wait $BACKEND_PID 2>/dev/null
+BACKEND_EXIT_CODE=$?
+
+if [ $BACKEND_EXIT_CODE -ne 0 ] && [ $BACKEND_EXIT_CODE -ne 143 ] && [ $BACKEND_EXIT_CODE -ne 130 ]; then
+  IS_ERROR_EXIT=1
+  echo ""
+  echo "❌ 偵測到後端服務非正常退出 (Exit Code: $BACKEND_EXIT_CODE)！"
+  echo "🔍 詳細錯誤日誌已記錄在：$ROOT_DIR/logs/backend.log"
+  echo "💡 如需由 AI (如 Jetski) 自動診斷環境，請執行："
+  echo "   ./.venv/bin/python scripts/diagnose.py"
+  echo ""
+  echo "請按任意鍵關閉終端機..."
+  read -n 1 -s || true
+else
+  echo "👋 偵測到瀏覽器分頁已關閉，Werv Studio 已安全退出。下次見！"
+fi
+
 cleanup
 exit 0

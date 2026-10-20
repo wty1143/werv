@@ -8,7 +8,10 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 from .asr_engine import FFMPEG_BIN, probe_video_metadata
+from .logger import get_logger
 from .models import KeepRange, Segment, Token, SubtitleStyle
+
+logger = get_logger("werv.exporter")
 
 _ASCII_WORD_RE = re.compile(r"^[A-Za-z0-9]+(?:'[A-Za-z0-9]+)?$")
 
@@ -559,7 +562,7 @@ def export_video_and_srt(
         f_script.write(filter_graph)
         script_path = f_script.name
 
-    def _build_cmd(filter_flag: str, filter_val: str) -> List[str]:
+    def _build_cmd(filter_flag: str, filter_val: str, vcodec: str) -> List[str]:
         cmd = [
             FFMPEG_BIN,
             "-y",
@@ -575,12 +578,13 @@ def export_video_and_srt(
             "[outv]",
             "-map",
             "[outa]",
-            "-c:v",
-            "h264_videotoolbox",
-            "-b:v",
-            "15M",
-            "-pix_fmt",
-            "yuv420p",
+        ])
+        if vcodec == "h264_videotoolbox":
+            cmd.extend(["-c:v", "h264_videotoolbox", "-b:v", "15M", "-pix_fmt", "yuv420p"])
+        else:
+            cmd.extend(["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"])
+
+        cmd.extend([
             "-c:a",
             "aac",
             "-b:a",
@@ -592,26 +596,41 @@ def export_video_and_srt(
         return cmd
 
     try:
-        if len(keep_ranges) > 50 or has_subtitles:
-            proc = subprocess.run(
-                _build_cmd("-/filter_complex", script_path),
-                capture_output=True,
-                text=True,
-            )
-            if proc.returncode != 0 and "Unrecognized option" in proc.stderr:
-                proc = subprocess.run(
-                    _build_cmd("-filter_complex_script", script_path),
-                    capture_output=True,
-                    text=True,
-                )
-        else:
-            proc = subprocess.run(
-                _build_cmd("-filter_complex", filter_graph),
-                capture_output=True,
-                text=True,
-            )
-        if proc.returncode != 0:
-            raise RuntimeError(f"FFmpeg 匯出失敗: {proc.stderr[-800:]}")
+        proc = None
+        last_stderr = ""
+        # 1. 優先使用 Apple VideoToolbox 硬體加速，失敗時自動無縫降級至 libx264 軟體編碼
+        encoders_to_try = ["h264_videotoolbox", "libx264"]
+
+        for enc in encoders_to_try:
+            if len(keep_ranges) > 50 or has_subtitles:
+                # 首先嘗試 -/filter_complex (FFmpeg 7+)
+                cmd = _build_cmd("-/filter_complex", script_path, enc)
+                logger.debug("嘗試 FFmpeg (%s) -/filter_complex: %s", enc, " ".join(cmd))
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+
+                # 若舊版 FFmpeg 不支援 -/filter_complex，退回嘗試 -filter_complex_script
+                if proc.returncode != 0:
+                    logger.warning("FFmpeg -/filter_complex (%s) 失敗 (code %d)，嘗試 -filter_complex_script...", enc, proc.returncode)
+                    cmd = _build_cmd("-filter_complex_script", script_path, enc)
+                    proc = subprocess.run(cmd, capture_output=True, text=True)
+            else:
+                cmd = _build_cmd("-filter_complex", filter_graph, enc)
+                logger.debug("嘗試 FFmpeg (%s) -filter_complex: %s", enc, " ".join(cmd))
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+
+            if proc.returncode == 0:
+                if enc != "h264_videotoolbox":
+                    logger.warning("注意：此 Mac 環境不支援 h264_videotoolbox 硬體編碼，已自動降級使用 libx264 軟體編碼完成！")
+                else:
+                    logger.info("Apple VideoToolbox 硬體編碼成功！")
+                break
+            else:
+                last_stderr = proc.stderr
+                logger.warning("FFmpeg 編碼器 [%s] 失敗 (code %d): %s", enc, proc.returncode, proc.stderr[-400:])
+
+        if proc is None or proc.returncode != 0:
+            logger.error("FFmpeg 所有編碼器嘗試皆失敗！詳細錯誤訊息:\n%s", last_stderr)
+            raise RuntimeError(f"FFmpeg 匯出失敗 (已嘗試 VideoToolbox 與 libx264): {last_stderr[-800:]}")
     finally:
         if os.path.exists(script_path):
             os.remove(script_path)
