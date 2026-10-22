@@ -83,16 +83,16 @@ const cloneSegments = (segs: Segment[]): Segment[] =>
 
 const getFontFamilyCss = (font: SubtitleFontFamily): string => {
   switch (font) {
+    case 'songti':
+      return "'Songti TC', 'Songti SC', 'STSong', serif"
     case 'pingfang':
       return "'PingFang TC', 'PingFang SC', -apple-system, BlinkMacSystemFont, sans-serif"
     case 'heiti':
       return "'Heiti TC', 'Heiti SC', sans-serif"
-    case 'songti':
-      return "'Songti TC', 'Songti SC', 'STSong', serif"
     case 'hiragino':
       return "'Hiragino Sans GB', 'Hiragino Kaku Gothic ProN', sans-serif"
     default:
-      return "'PingFang TC', sans-serif"
+      return "'Songti TC', 'Songti SC', 'STSong', serif"
   }
 }
 
@@ -147,7 +147,7 @@ export default function App() {
   const [showSubtitleOverlay, setShowSubtitleOverlay] = useState<boolean>(true)
   const [subtitleStyle, setSubtitleStyle] = useState<SubtitleStyle>({
     enabled: true,
-    font_family: 'pingfang',
+    font_family: 'songti',
     font_size: 48,
     text_color: '#FFFFFF',
     style_mode: 'box',
@@ -2567,18 +2567,14 @@ export default function App() {
                   const isBox = subtitleStyle.style_mode === 'box'
 
                   let textShadowStyle: string | undefined = undefined
+                  let webkitTextStroke: string | undefined = undefined
+                  let paintOrder: string | undefined = undefined
+
                   if (isOutline) {
-                    textShadowStyle = `
-                      -${outlineW}px -${outlineW}px 0 #000,
-                       ${outlineW}px -${outlineW}px 0 #000,
-                      -${outlineW}px  ${outlineW}px 0 #000,
-                       ${outlineW}px  ${outlineW}px 0 #000,
-                       0px -${outlineW}px 0 #000,
-                       0px  ${outlineW}px 0 #000,
-                      -${outlineW}px  0px 0 #000,
-                       ${outlineW}px  0px 0 #000,
-                       0 2px 4px rgba(0,0,0,0.8)
-                    `
+                    const strokeWidthPx = Math.max(1.5, Math.round(outlineW * 1.0))
+                    webkitTextStroke = `${strokeWidthPx}px #000000`
+                    paintOrder = 'stroke fill'
+                    textShadowStyle = '0 2px 4px rgba(0,0,0,0.6)'
                   } else if (isShadow) {
                     textShadowStyle = '0 3px 6px rgba(0,0,0,0.95), 0 1px 2px rgba(0,0,0,0.9)'
                   }
@@ -2594,17 +2590,28 @@ export default function App() {
                           fontFamily: fontFamilyCss,
                           color: subtitleStyle.text_color,
                           textShadow: textShadowStyle,
+                          WebkitTextStroke: webkitTextStroke,
+                          paintOrder: paintOrder,
                           backgroundColor: isBox
                             ? `rgba(0, 0, 0, ${subtitleStyle.box_opacity})`
                             : 'transparent',
                           fontSize: `${Math.max(13, Math.min(32, Math.round(subtitleStyle.font_size * 0.38)))}px`,
                         }}
-                        className={`px-4 py-1.5 rounded-lg border border-white/10 shadow-lg max-w-[94%] text-center cursor-ns-resize hover:ring-2 hover:ring-cyan-400/60 transition select-none flex items-center gap-1.5 font-bold tracking-wide ${
+                        className={`px-4 py-1.5 rounded-lg ${
+                          isBox
+                            ? 'border border-white/10 shadow-lg'
+                            : 'border border-transparent hover:border-white/20'
+                        } max-w-[94%] text-center cursor-ns-resize hover:ring-2 hover:ring-cyan-400/60 transition select-none flex items-center gap-1.5 font-bold tracking-wide ${
                           isDraggingSubtitle ? 'ring-2 ring-cyan-400 scale-[1.02]' : ''
                         }`}
                         title="按住滑鼠左鍵可上下拖曳調整字幕位置"
                       >
-                        <span className="opacity-40 hover:opacity-100 text-xs select-none">⠿</span>
+                        <span
+                          style={{ WebkitTextStroke: '0px transparent' }}
+                          className="opacity-40 hover:opacity-100 text-xs select-none"
+                        >
+                          ⠿
+                        </span>
                         {isPreviewSample ? (
                           <span className="italic text-cyan-300/90">{displayText}</span>
                         ) : seg && seg.caption !== undefined && seg.caption !== null ? (
@@ -2857,10 +2864,10 @@ export default function App() {
                       }
                       className="w-full bg-[#0c0e14] border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200 focus:outline-none focus:border-cyan-400"
                     >
+                      <option value="songti">宋體/明體 (Songti - 預設優雅文藝)</option>
                       <option value="pingfang">蘋方體 (PingFang TC - 現代標準)</option>
                       <option value="heiti">黑體 (Heiti TC - 硬朗俐落)</option>
                       <option value="hiragino">冬青黑體 (Hiragino Sans)</option>
-                      <option value="songti">宋體/明體 (Songti - 優雅文藝)</option>
                     </select>
                   </div>
 

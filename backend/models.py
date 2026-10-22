@@ -25,7 +25,7 @@ class KeepRange(BaseModel):
 
 class SubtitleStyle(BaseModel):
     enabled: bool = True
-    font_family: Literal["pingfang", "heiti", "songti", "hiragino"] = "pingfang"
+    font_family: Literal["pingfang", "heiti", "songti", "hiragino"] = "songti"
     font_size: int = 48  # 基於 1080p 高度的參考字號 (28 ~ 84)
     text_color: str = "#FFFFFF"
     style_mode: Literal["box", "outline", "shadow"] = "box"
