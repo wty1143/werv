@@ -37,7 +37,34 @@ export interface ProjectMetadata {
   custom_prompt: string
   silence_threshold: number
   segments: Segment[]
+  initial_segments?: Segment[] | null
+  subtitle_style?: SubtitleStyle | null
   vad_intervals?: Array<{ start: number; end: number }>
+  updated_at?: string | null
+}
+
+export interface SnapshotDiffSummary {
+  total_rows: number
+  initial_rows: number
+  row_delta: number
+  deleted_words: number
+  deleted_silences: number
+  shortened_silences: number
+  modified_count: number
+  modified_details: string[]
+}
+
+export interface ProjectSnapshot {
+  snapshot_id: string
+  project_id: string
+  filename: string
+  label: string
+  trigger: 'manual' | 'pre_export' | 'auto' | 'initial'
+  created_at: string
+  silence_threshold: number
+  subtitle_style: SubtitleStyle
+  segments: Segment[]
+  summary: SnapshotDiffSummary
 }
 
 export interface ExportResponse {

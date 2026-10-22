@@ -7,8 +7,9 @@ import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,10 +26,16 @@ from .asr_engine import (
 )
 from .exporter import export_video_and_srt
 from .models import (
+    CreateSnapshotRequest,
     ExportRequest,
     ExportResponse,
     ProjectMetadata,
+    ProjectSnapshot,
     RebuildSilenceRequest,
+    SaveProjectStateRequest,
+    Segment,
+    SnapshotDiffSummary,
+    SubtitleStyle,
     TranscribeRequest,
 )
 
@@ -37,8 +44,9 @@ STORAGE_DIR = BASE_DIR / "storage"
 UPLOADS_DIR = STORAGE_DIR / "uploads"
 EXPORTS_DIR = STORAGE_DIR / "exports"
 PROJECTS_DIR = STORAGE_DIR / "projects"
+SNAPSHOTS_DIR = STORAGE_DIR / "snapshots"
 
-for d in (STORAGE_DIR, UPLOADS_DIR, EXPORTS_DIR, PROJECTS_DIR):
+for d in (STORAGE_DIR, UPLOADS_DIR, EXPORTS_DIR, PROJECTS_DIR, SNAPSHOTS_DIR):
     d.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="Werv - Mac 本機端逐字稿剪輯工具 API", version="1.0.0")
@@ -106,6 +114,120 @@ def _find_video_file(project_id: str) -> Path:
     if not matches:
         raise HTTPException(status_code=404, detail=f"找不到專案影片檔案 {project_id}")
     return matches[0]
+
+
+def _project_snapshots_dir(project_id: str) -> Path:
+    d = SNAPSHOTS_DIR / project_id
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _compute_snapshot_summary(
+    segments: List[Segment],
+    initial_segments: Optional[List[Segment]],
+) -> SnapshotDiffSummary:
+    total_rows = len(segments)
+    init_rows = len(initial_segments) if initial_segments else total_rows
+    row_delta = total_rows - init_rows
+
+    del_words = 0
+    del_silences = 0
+    shortened_silences = 0
+
+    for seg in segments:
+        for tok in seg.tokens:
+            if tok.type == "word":
+                if tok.deleted:
+                    del_words += 1
+            else:
+                if tok.deleted:
+                    del_silences += 1
+                elif tok.keep_duration is not None and tok.keep_duration > 0:
+                    shortened_silences += 1
+
+    modified_details: List[str] = []
+    initial_words_map: Dict[str, str] = {}
+    if initial_segments:
+        for seg in initial_segments:
+            for tok in seg.tokens:
+                if tok.type == "word":
+                    initial_words_map[tok.id] = tok.text
+
+        for seg_idx, seg in enumerate(segments):
+            if seg.caption is not None and seg.caption.strip():
+                modified_details.append(f"第 {seg_idx + 1} 列自訂字幕：「{seg.caption.strip()[:20]}」")
+            for tok in seg.tokens:
+                if tok.type == "word" and tok.id in initial_words_map:
+                    orig = initial_words_map[tok.id]
+                    if orig != tok.text:
+                        modified_details.append(f"「{orig}」➔「{tok.text}」")
+
+    return SnapshotDiffSummary(
+        total_rows=total_rows,
+        initial_rows=init_rows,
+        row_delta=row_delta,
+        deleted_words=del_words,
+        deleted_silences=del_silences,
+        shortened_silences=shortened_silences,
+        modified_count=len(modified_details),
+        modified_details=modified_details[:20],
+    )
+
+
+def _create_snapshot(
+    project: ProjectMetadata,
+    label: Optional[str] = None,
+    trigger: str = "manual",
+    segments: Optional[List[Segment]] = None,
+    silence_threshold: Optional[float] = None,
+    subtitle_style: Optional[SubtitleStyle] = None,
+) -> ProjectSnapshot:
+    cur_segments = segments if segments is not None else project.segments
+    cur_threshold = silence_threshold if silence_threshold is not None else project.silence_threshold
+    cur_style = subtitle_style if subtitle_style is not None else (project.subtitle_style or SubtitleStyle())
+
+    now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    snap_id = f"snap_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+    if not label:
+        if trigger == "pre_export":
+            label = f"匯出前自動備份 ({datetime.now().strftime('%H:%M:%S')})"
+        elif trigger == "initial":
+            label = "初始辨識基準"
+        elif trigger == "auto":
+            label = f"自動存檔 ({datetime.now().strftime('%H:%M:%S')})"
+        else:
+            label = f"手動快照 ({datetime.now().strftime('%H:%M:%S')})"
+
+    summary = _compute_snapshot_summary(cur_segments, project.initial_segments)
+
+    snapshot = ProjectSnapshot(
+        snapshot_id=snap_id,
+        project_id=project.project_id,
+        filename=project.filename,
+        label=label,
+        trigger=trigger,
+        created_at=now_iso,
+        silence_threshold=cur_threshold,
+        subtitle_style=cur_style,
+        segments=cur_segments,
+        summary=summary,
+    )
+
+    p_dir = _project_snapshots_dir(project.project_id)
+    target = p_dir / f"{snap_id}.json"
+    target.write_text(snapshot.model_dump_json(indent=2), encoding="utf-8")
+
+    # Keep at most 50 snapshots
+    snaps = sorted(p_dir.glob("snap_*.json"), key=lambda p: p.stat().st_mtime)
+    if len(snaps) > 50:
+        for old in snaps[:-50]:
+            try:
+                old.unlink()
+            except Exception:
+                pass
+
+    return snapshot
 
 
 @app.get("/api/health")
@@ -223,12 +345,21 @@ def transcribe_project(req: TranscribeRequest) -> ProjectMetadata:
         return_vad=True,
     )
 
+    import copy
     project.model_name = req.model_name
     project.custom_prompt = req.custom_prompt
     project.silence_threshold = req.silence_threshold
     project.segments = segments
+    project.initial_segments = copy.deepcopy(segments)
     project.vad_intervals = vad_intervals
+    project.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     _save_project(project)
+
+    try:
+        _create_snapshot(project=project, trigger="initial", label="初始語音辨識基準")
+    except Exception as e:
+        logger.warning("建立初始快照失敗: %s", e)
+
     return project
 
 
@@ -254,6 +385,109 @@ def rebuild_silence(req: RebuildSilenceRequest):
 @app.get("/api/projects/{project_id}", response_model=ProjectMetadata)
 def get_project(project_id: str) -> ProjectMetadata:
     return _load_project(project_id)
+
+
+@app.put("/api/projects/{project_id}/state", response_model=ProjectMetadata)
+def save_project_state(project_id: str, req: SaveProjectStateRequest) -> ProjectMetadata:
+    project = _load_project(project_id)
+    project.segments = req.segments
+    if req.silence_threshold is not None:
+        project.silence_threshold = req.silence_threshold
+    if req.subtitle_style is not None:
+        project.subtitle_style = req.subtitle_style
+    project.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _save_project(project)
+    return project
+
+
+@app.get("/api/projects")
+def list_projects():
+    """列出本機所有影片專案，供前端選單隨時切換與恢復。"""
+    results = []
+    for p in sorted(PROJECTS_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True):
+        try:
+            content = p.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
+            meta = ProjectMetadata.model_validate_json(content)
+            results.append({
+                "project_id": meta.project_id,
+                "filename": meta.filename,
+                "duration": meta.duration,
+                "segment_count": len(meta.segments),
+                "updated_at": meta.updated_at or datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            })
+        except Exception:
+            continue
+    return results
+
+
+@app.post("/api/projects/{project_id}/snapshots", response_model=ProjectSnapshot)
+def create_snapshot_endpoint(project_id: str, req: CreateSnapshotRequest) -> ProjectSnapshot:
+    project = _load_project(project_id)
+    project.segments = req.segments
+    project.silence_threshold = req.silence_threshold
+    if req.subtitle_style is not None:
+        project.subtitle_style = req.subtitle_style
+    project.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _save_project(project)
+
+    return _create_snapshot(
+        project=project,
+        label=req.label,
+        trigger=req.trigger,
+        segments=req.segments,
+        silence_threshold=req.silence_threshold,
+        subtitle_style=req.subtitle_style,
+    )
+
+
+@app.get("/api/projects/{project_id}/snapshots", response_model=List[ProjectSnapshot])
+def list_snapshots_endpoint(project_id: str) -> List[ProjectSnapshot]:
+    p_dir = _project_snapshots_dir(project_id)
+    results: List[ProjectSnapshot] = []
+    for snap_file in sorted(p_dir.glob("snap_*.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+        try:
+            data = snap_file.read_text(encoding="utf-8")
+            results.append(ProjectSnapshot.model_validate_json(data))
+        except Exception as e:
+            logger.warning("無法載入快照 %s: %s", snap_file.name, e)
+            continue
+    return results
+
+
+@app.post("/api/projects/{project_id}/snapshots/{snapshot_id}/restore", response_model=ProjectMetadata)
+def restore_snapshot_endpoint(project_id: str, snapshot_id: str) -> ProjectMetadata:
+    p_dir = _project_snapshots_dir(project_id)
+    target = p_dir / f"{snapshot_id}.json"
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="找不到指定快照")
+
+    snap = ProjectSnapshot.model_validate_json(target.read_text(encoding="utf-8"))
+    project = _load_project(project_id)
+
+    # 在還原之前，先自動為當前狀態備份一筆
+    try:
+        _create_snapshot(project=project, label=f"還原前自動備份 ({datetime.now().strftime('%H:%M:%S')})", trigger="auto")
+    except Exception:
+        pass
+
+    project.segments = snap.segments
+    project.silence_threshold = snap.silence_threshold
+    project.subtitle_style = snap.subtitle_style
+    project.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _save_project(project)
+    return project
+
+
+@app.delete("/api/projects/{project_id}/snapshots/{snapshot_id}")
+def delete_snapshot_endpoint(project_id: str, snapshot_id: str):
+    p_dir = _project_snapshots_dir(project_id)
+    target = p_dir / f"{snapshot_id}.json"
+    if target.exists():
+        target.unlink()
+        return {"status": "deleted", "snapshot_id": snapshot_id}
+    raise HTTPException(status_code=404, detail="找不到指定快照")
 
 
 @app.post("/api/export", response_model=ExportResponse)
@@ -282,6 +516,16 @@ def export_project(req: ExportRequest) -> ExportResponse:
         req.subtitle_style.style_mode,
     )
 
+    # 1. 執行 FFmpeg 前先完整存檔並自動建立匯出前快照，確保即使匯出中斷也不會遺失任何換行或改字
+    project.segments = req.segments
+    project.subtitle_style = req.subtitle_style
+    project.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    _save_project(project)
+    try:
+        _create_snapshot(project=project, trigger="pre_export")
+    except Exception as e:
+        logger.warning("建立匯出前快照失敗 (不中斷匯出): %s", e)
+
     try:
         res = export_video_and_srt(
             input_video_path=str(video_path),
@@ -302,10 +546,6 @@ def export_project(req: ExportRequest) -> ExportResponse:
     except Exception as e:
         logger.exception("匯出處理發生例外錯誤: %s", e)
         raise HTTPException(status_code=500, detail=str(e))
-
-    # Persist latest edited segments
-    project.segments = req.segments
-    _save_project(project)
 
     return ExportResponse(
         export_id=export_id,
@@ -483,6 +723,10 @@ def create_demo_project(
                     for tok in seg.tokens:
                         tok.deleted = False
                         tok.keep_duration = None
+                if not cached.initial_segments and cached.segments:
+                    import copy
+                    cached.initial_segments = copy.deepcopy(cached.segments)
+                    _save_project(cached)
                 return cached
         except Exception:
             # 檔案損毀時自動從 demo_assets 覆蓋修復
@@ -518,8 +762,16 @@ def create_demo_project(
             total_duration=project.duration,
             return_vad=True,
         )
+        import copy
+        project.initial_segments = copy.deepcopy(project.segments)
+        project.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     _save_project(project)
+    if transcribe and project.segments:
+        try:
+            _create_snapshot(project=project, trigger="initial", label="初始範例辨識基準")
+        except Exception:
+            pass
     return project
 
 

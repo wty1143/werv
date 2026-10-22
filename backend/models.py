@@ -23,6 +23,17 @@ class KeepRange(BaseModel):
     end: float
 
 
+class SubtitleStyle(BaseModel):
+    enabled: bool = True
+    font_family: Literal["pingfang", "heiti", "songti", "hiragino"] = "pingfang"
+    font_size: int = 48  # 基於 1080p 高度的參考字號 (28 ~ 84)
+    text_color: str = "#FFFFFF"
+    style_mode: Literal["box", "outline", "shadow"] = "box"
+    box_opacity: float = 0.75  # 半透明底框不透明度
+    outline_width: int = 3     # 描邊粗細
+    bottom_offset_pct: float = 8.0  # 距離畫面底部百分比 (3.0 ~ 85.0)
+
+
 class ProjectMetadata(BaseModel):
     project_id: str
     filename: str
@@ -35,7 +46,10 @@ class ProjectMetadata(BaseModel):
     custom_prompt: str = ""
     silence_threshold: float = 0.4
     segments: List[Segment] = Field(default_factory=list)
+    initial_segments: Optional[List[Segment]] = None
+    subtitle_style: Optional[SubtitleStyle] = None
     vad_intervals: Optional[List[dict]] = None
+    updated_at: Optional[str] = None
 
 
 class TranscribeRequest(BaseModel):
@@ -56,15 +70,42 @@ class RebuildSilenceRequest(BaseModel):
     vad_intervals: Optional[List[dict]] = None
 
 
-class SubtitleStyle(BaseModel):
-    enabled: bool = True
-    font_family: Literal["pingfang", "heiti", "songti", "hiragino"] = "pingfang"
-    font_size: int = 48  # 基於 1080p 高度的參考字號 (28 ~ 84)
-    text_color: str = "#FFFFFF"
-    style_mode: Literal["box", "outline", "shadow"] = "box"
-    box_opacity: float = 0.75  # 半透明底框不透明度
-    outline_width: int = 3     # 描邊粗細
-    bottom_offset_pct: float = 8.0  # 距離畫面底部百分比 (3.0 ~ 85.0)
+class SaveProjectStateRequest(BaseModel):
+    segments: List[Segment]
+    silence_threshold: Optional[float] = None
+    subtitle_style: Optional[SubtitleStyle] = None
+
+
+class SnapshotDiffSummary(BaseModel):
+    total_rows: int
+    initial_rows: int
+    row_delta: int
+    deleted_words: int
+    deleted_silences: int
+    shortened_silences: int
+    modified_count: int
+    modified_details: List[str] = Field(default_factory=list)
+
+
+class ProjectSnapshot(BaseModel):
+    snapshot_id: str
+    project_id: str
+    filename: str
+    label: str
+    trigger: Literal["manual", "pre_export", "auto", "initial"] = "manual"
+    created_at: str
+    silence_threshold: float = 0.4
+    subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
+    segments: List[Segment] = Field(default_factory=list)
+    summary: SnapshotDiffSummary
+
+
+class CreateSnapshotRequest(BaseModel):
+    label: Optional[str] = None
+    trigger: Literal["manual", "pre_export", "auto", "initial"] = "manual"
+    segments: List[Segment]
+    silence_threshold: float = 0.4
+    subtitle_style: Optional[SubtitleStyle] = None
 
 
 class ExportRequest(BaseModel):

@@ -3,19 +3,25 @@ import {
   ArrowDown,
   ArrowLeft,
   ArrowUp,
+  Camera,
   Check,
+  CheckCircle2,
   ChevronDown,
   ChevronRight,
   ChevronUp,
   Clock,
   CornerDownLeft,
+  Download,
   Edit3,
   Eye,
   EyeOff,
+  FileDown,
   FileText,
+  FileUp,
   Film,
   Folder,
   FolderOpen,
+  History,
   Keyboard,
   Merge,
   Palette,
@@ -24,6 +30,7 @@ import {
   Redo2,
   RefreshCw,
   RotateCcw,
+  Save,
   Scissors,
   Search,
   Settings2,
@@ -31,6 +38,7 @@ import {
   Trash2,
   Type,
   Undo2,
+  Upload,
   Volume2,
   VolumeX,
   Wand2,
@@ -56,7 +64,9 @@ import {
 import {
   ExportResponse,
   ProjectMetadata,
+  ProjectSnapshot,
   Segment,
+  SnapshotDiffSummary,
   SubtitleFontFamily,
   SubtitleStyle,
   SubtitleStyleMode,
@@ -111,9 +121,21 @@ export default function App() {
   const [isDraggingSelect, setIsDraggingSelect] = useState<boolean>(false)
   const [editingTokenId, setEditingTokenId] = useState<string | null>(null)
   const [editingText, setEditingText] = useState<string>('')
-  // Word-style caret states
-  const [cursorTokenId, setCursorTokenId] = useState<string | null>(null)
-  const [isAtRowStart, setIsAtRowStart] = useState<boolean>(false)
+  // Vrew-style insertion caret state (Inter-token boundary index)
+  const [caretPos, setCaretPos] = useState<{ segId: string; index: number } | null>(null)
+
+  // Snapshot & Project Recovery State
+  const [snapshots, setSnapshots] = useState<ProjectSnapshot[]>([])
+  const [showSnapshotModal, setShowSnapshotModal] = useState<boolean>(false)
+  const [isSavingSnapshot, setIsSavingSnapshot] = useState<boolean>(false)
+  const [isRestoringSnapshot, setIsRestoringSnapshot] = useState<boolean>(false)
+  const [newSnapshotLabel, setNewSnapshotLabel] = useState<string>('')
+  const [recentProjects, setRecentProjects] = useState<
+    { project_id: string; filename: string; duration: number; updated_at?: string }[]
+  >([])
+  const [isAutoSaving, setIsAutoSaving] = useState<boolean>(false)
+  const [lastSavedTime, setLastSavedTime] = useState<string | null>(null)
+  const autoSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Playback & Virtual Timeline State
   const videoRef = useRef<HTMLVideoElement | null>(null)
@@ -184,12 +206,17 @@ export default function App() {
     return list
   }, [segments])
 
-  // Resolve current cursor flat index
+  // Resolve current cursor flat index from caretPos
   const cursorFlatIndex = useMemo(() => {
-    if (!cursorTokenId) return null
-    const idx = flatTokens.findIndex((item) => item.token.id === cursorTokenId)
-    return idx !== -1 ? idx : null
-  }, [flatTokens, cursorTokenId])
+    if (!caretPos) return null
+    const segIdx = segments.findIndex((s) => s.id === caretPos.segId)
+    if (segIdx === -1) return null
+    const seg = segments[segIdx]
+    const tokIndex = Math.min(caretPos.index, Math.max(0, seg.tokens.length - 1))
+    const targetTok = seg.tokens[tokIndex]
+    if (!targetTok) return null
+    return flatTokens.findIndex((item) => item.token.id === targetTok.id)
+  }, [segments, caretPos, flatTokens])
 
   const scrollTokenIntoView = useCallback((tokId: string) => {
     const el = document.getElementById(`tok-${tokId}`)
@@ -319,6 +346,21 @@ export default function App() {
     }
   }, [isMuted])
 
+  // Fetch snapshots list
+  const fetchSnapshots = useCallback(async (projId?: string) => {
+    const pId = projId || project?.project_id
+    if (!pId) return
+    try {
+      const res = await fetch(`/api/projects/${pId}/snapshots`)
+      if (res.ok) {
+        const data: ProjectSnapshot[] = await res.json()
+        setSnapshots(data)
+      }
+    } catch (err) {
+      console.warn('Failed to load snapshots:', err)
+    }
+  }, [project?.project_id])
+
   // Load Demo Project on first visit so user immediately sees a working Vrew project
   const handleLoadDemo = useCallback(async () => {
     setErrorBanner(null)
@@ -333,14 +375,17 @@ export default function App() {
       const data: ProjectMetadata = await resp.json()
       setProject(data)
       setSegments(data.segments)
+      if (data.subtitle_style) {
+        setSubtitleStyle(data.subtitle_style)
+      }
       setUndoStack([])
       setRedoStack([])
       setSelectedTokenIds(new Set())
-      setCursorTokenId(null)
-      setIsAtRowStart(false)
+      setCaretPos(null)
       setSilenceThreshold(data.silence_threshold || 0.4)
       setBatchSilenceMin(data.silence_threshold || 0.4)
       setExportResult(null)
+      fetchSnapshots(data.project_id)
       setStatusMessage(
         `已載入「${data.filename}」· 共 ${data.segments.length} 列字幕，可點選任意字或氣口按空白鍵剪輯`
       )
@@ -349,7 +394,243 @@ export default function App() {
     } finally {
       setIsLoadingDemo(false)
     }
+  }, [fetchSnapshots])
+
+  const fetchRecentProjects = useCallback(async () => {
+    try {
+      const res = await fetch('/api/projects')
+      if (res.ok) {
+        const list = await res.json()
+        setRecentProjects(list)
+      }
+    } catch (e) {
+      console.warn('Failed to load recent projects:', e)
+    }
   }, [])
+
+  // Create Snapshot
+  const handleCreateSnapshot = useCallback(
+    async (customLabel?: string) => {
+      if (!project) return
+      setIsSavingSnapshot(true)
+      const nowStr = new Date().toLocaleTimeString('zh-TW', { hour12: false })
+      const label = customLabel || newSnapshotLabel.trim() || `手動快照 (${nowStr})`
+
+      try {
+        const res = await fetch(`/api/projects/${project.project_id}/snapshots`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            label,
+            trigger: 'manual',
+            segments,
+            silence_threshold: silenceThreshold,
+            subtitle_style: subtitleStyle,
+          }),
+        })
+        if (res.ok) {
+          const snap: ProjectSnapshot = await res.json()
+          setSnapshots((prev) => [snap, ...prev])
+          setNewSnapshotLabel('')
+          setStatusMessage(`📸 已儲存快照「${label}」！共記錄 ${segments.length} 列字幕與換行變更`)
+        } else {
+          setStatusMessage('儲存快照失敗')
+        }
+      } catch (err) {
+        console.error('Failed to save snapshot:', err)
+        setStatusMessage('儲存快照連線錯誤')
+      } finally {
+        setIsSavingSnapshot(false)
+      }
+    },
+    [project, newSnapshotLabel, segments, silenceThreshold, subtitleStyle]
+  )
+
+  // Restore Snapshot
+  const handleRestoreSnapshot = useCallback(
+    async (snapId: string) => {
+      if (!project) return
+      if (!window.confirm('確定要還原至此快照版本嗎？（還原前系統會自動替您建立備份）')) return
+      setIsRestoringSnapshot(true)
+      try {
+        const res = await fetch(`/api/projects/${project.project_id}/snapshots/${snapId}/restore`, {
+          method: 'POST',
+        })
+        if (res.ok) {
+          const updatedProj: ProjectMetadata = await res.json()
+          setProject(updatedProj)
+          setSegments(updatedProj.segments)
+          if (updatedProj.subtitle_style) {
+            setSubtitleStyle(updatedProj.subtitle_style)
+          }
+          if (updatedProj.silence_threshold != null) {
+            setSilenceThreshold(updatedProj.silence_threshold)
+          }
+          setCaretPos(null)
+          setSelectedTokenIds(new Set())
+          await fetchSnapshots(project.project_id)
+          setShowSnapshotModal(false)
+          setStatusMessage(`⚡ 已成功還原至快照版本！共復原 ${updatedProj.segments.length} 列字幕`)
+        } else {
+          const err = await res.json()
+          setStatusMessage(`還原失敗: ${err.detail || '未知錯誤'}`)
+        }
+      } catch (err) {
+        console.error('Failed to restore snapshot:', err)
+        setStatusMessage('還原快照時發生錯誤')
+      } finally {
+        setIsRestoringSnapshot(false)
+      }
+    },
+    [project, fetchSnapshots]
+  )
+
+  // Delete Snapshot
+  const handleDeleteSnapshot = useCallback(
+    async (snapId: string) => {
+      if (!project) return
+      try {
+        const res = await fetch(`/api/projects/${project.project_id}/snapshots/${snapId}`, {
+          method: 'DELETE',
+        })
+        if (res.ok) {
+          setSnapshots((prev) => prev.filter((s) => s.snapshot_id !== snapId))
+          setStatusMessage('已刪除該快照紀錄')
+        }
+      } catch (err) {
+        console.error('Failed to delete snapshot:', err)
+      }
+    },
+    [project]
+  )
+
+  // Download Snapshot File (.werv.json)
+  const handleDownloadSnapshotFile = (snap: ProjectSnapshot) => {
+    const jsonStr = JSON.stringify(snap, null, 2)
+    const blob = new Blob([jsonStr], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    const safeName = (project?.filename || 'werv_project').replace(/\.[^/.]+$/, '')
+    a.download = `${safeName}_snapshot_${snap.snapshot_id}.werv.json`
+    a.click()
+    URL.revokeObjectURL(url)
+    setStatusMessage(`已下載快照備份檔：${a.download}`)
+  }
+
+  // Import Snapshot File (.werv.json)
+  const handleImportSnapshotFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = async (ev) => {
+      try {
+        const parsed = JSON.parse(ev.target?.result as string)
+        if (parsed.segments && Array.isArray(parsed.segments)) {
+          commitSegments(parsed.segments)
+          if (parsed.subtitle_style) {
+            setSubtitleStyle(parsed.subtitle_style)
+          }
+          if (parsed.silence_threshold != null) {
+            setSilenceThreshold(parsed.silence_threshold)
+          }
+          setCaretPos(null)
+          setSelectedTokenIds(new Set())
+          setStatusMessage(`已從檔案「${file.name}」匯入並套用字幕與編輯資料！`)
+          await handleCreateSnapshot(`從 ${file.name} 匯入`)
+          setShowSnapshotModal(false)
+        } else {
+          alert('檔案格式不正確，缺少 segments 陣列')
+        }
+      } catch (err) {
+        alert('無法解析該 JSON 檔案')
+      }
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
+  // Switch Project
+  const handleSwitchProject = async (projectId: string) => {
+    try {
+      const res = await fetch(`/api/projects/${projectId}`)
+      if (res.ok) {
+        const data: ProjectMetadata = await res.json()
+        setProject(data)
+        setSegments(data.segments)
+        if (data.subtitle_style) setSubtitleStyle(data.subtitle_style)
+        if (data.silence_threshold != null) setSilenceThreshold(data.silence_threshold)
+        setUndoStack([])
+        setRedoStack([])
+        setCaretPos(null)
+        setSelectedTokenIds(new Set())
+        localStorage.setItem('werv_last_project_id', data.project_id)
+        setStatusMessage(`已切換至專案「${data.filename}」`)
+        await fetchSnapshots(data.project_id)
+        setShowSnapshotModal(false)
+      }
+    } catch (e) {
+      console.error('Failed to switch project:', e)
+    }
+  }
+
+  // Auto-Save Effect (LocalStorage + Debounced Backend PUT /state)
+  useEffect(() => {
+    if (!project?.project_id || segments.length === 0) return
+
+    try {
+      localStorage.setItem(
+        `werv_backup_${project.project_id}`,
+        JSON.stringify({
+          segments,
+          subtitle_style: subtitleStyle,
+          silence_threshold: silenceThreshold,
+          updated_at: new Date().toISOString(),
+        })
+      )
+      localStorage.setItem('werv_last_project_id', project.project_id)
+    } catch (e) {
+      console.warn('LocalStorage save failed:', e)
+    }
+
+    if (autoSaveTimerRef.current) {
+      clearTimeout(autoSaveTimerRef.current)
+    }
+
+    autoSaveTimerRef.current = setTimeout(async () => {
+      setIsAutoSaving(true)
+      try {
+        const res = await fetch(`/api/projects/${project.project_id}/state`, {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            segments,
+            subtitle_style: subtitleStyle,
+            silence_threshold: silenceThreshold,
+          }),
+        })
+        if (res.ok) {
+          setLastSavedTime(new Date().toLocaleTimeString('zh-TW', { hour12: false }))
+        }
+      } catch (e) {
+        console.warn('Auto-save error:', e)
+      } finally {
+        setIsAutoSaving(false)
+      }
+    }, 1000)
+
+    return () => {
+      if (autoSaveTimerRef.current) {
+        clearTimeout(autoSaveTimerRef.current)
+      }
+    }
+  }, [segments, subtitleStyle, silenceThreshold, project?.project_id])
+
+  useEffect(() => {
+    if (project?.project_id) {
+      fetchSnapshots(project.project_id)
+    }
+  }, [project?.project_id, fetchSnapshots])
 
   const hasInitialDemoLoadedRef = useRef(false)
   useEffect(() => {
@@ -451,8 +732,7 @@ export default function App() {
       setUndoStack([])
       setRedoStack([])
       setSelectedTokenIds(new Set())
-      setCursorTokenId(null)
-      setIsAtRowStart(false)
+      setCaretPos(null)
       setShowAsrSettings(false)
       setStatusMessage(
         `語音辨識完成！共產生 ${data.segments.length} 列台灣繁中字幕與氣口標記`
@@ -504,55 +784,68 @@ export default function App() {
     )
   }, [selectedTokenIds, segments, commitSegments])
 
-  // Split segment at selected token (在任一字 Token 按 Enter 可將該列拆分為兩列字幕)
-  const handleSplitSegmentAtToken = useCallback(
+  // Split segment at caret (游標左方文字保留於原列，游標右方文字移至新的一列)
+  const handleSplitSegmentAtCaret = useCallback(
     (targetTokenId?: string) => {
-      const tokId =
-        targetTokenId || (selectedTokenIds.size === 1 ? Array.from(selectedTokenIds)[0] : null)
-      if (!tokId) return
+      let targetSegId = caretPos?.segId
+      let splitIndex = caretPos?.index
+
+      // Fallback: If no caretPos but targetTokenId is provided or single token is selected
+      if (
+        (!targetSegId || splitIndex === undefined) &&
+        (targetTokenId || selectedTokenIds.size === 1)
+      ) {
+        const tokId = targetTokenId || Array.from(selectedTokenIds)[0]
+        for (const s of segments) {
+          const idx = s.tokens.findIndex((t) => t.id === tokId)
+          if (idx !== -1) {
+            targetSegId = s.id
+            splitIndex = idx + 1
+            break
+          }
+        }
+      }
+
+      if (!targetSegId || splitIndex === undefined) {
+        setStatusMessage('請先點擊字塊或字間縫隙放置游標，再按 Enter 換行')
+        return
+      }
+
+      const seg = segments.find((s) => s.id === targetSegId)
+      if (!seg) return
+
+      // Split index must be between 1 and seg.tokens.length - 1 to split into 2 non-empty rows
+      if (splitIndex <= 0 || splitIndex >= seg.tokens.length) {
+        setStatusMessage('請將閃爍游標置於兩個字塊之間再按 Enter 換行')
+        return
+      }
+
+      const firstHalf = seg.tokens.slice(0, splitIndex)
+      const secondHalf = seg.tokens.slice(splitIndex)
+      const newSegId = makeUid('seg')
 
       const nextSegments: Segment[] = []
-      let didSplit = false
-      let newSplitTokenId: string | null = null
-
-      for (const seg of segments) {
-        const idx = seg.tokens.findIndex((t) => t.id === tokId)
-        if (idx === -1) {
-          nextSegments.push(seg)
-          continue
-        }
-
-        // If token is at index > 0, split before idx; if at index 0 and row has >1 token, split after index 0
-        const splitPos = idx > 0 ? idx : seg.tokens.length > 1 ? 1 : -1
-        if (splitPos === -1) {
-          nextSegments.push(seg)
-          continue
-        }
-
-        const firstHalf = seg.tokens.slice(0, splitPos)
-        const secondHalf = seg.tokens.slice(splitPos)
-        nextSegments.push({ id: seg.id, tokens: firstHalf, caption: null })
-        nextSegments.push({ id: makeUid('seg'), tokens: secondHalf, caption: null })
-        didSplit = true
-        if (secondHalf.length > 0) {
-          newSplitTokenId = secondHalf[0].id
+      for (const s of segments) {
+        if (s.id !== seg.id) {
+          nextSegments.push(s)
+        } else {
+          nextSegments.push({ id: s.id, tokens: firstHalf, caption: null })
+          nextSegments.push({ id: newSegId, tokens: secondHalf, caption: null })
         }
       }
 
-      if (didSplit) {
-        commitSegments(nextSegments)
-        if (newSplitTokenId) {
-          setCursorTokenId(newSplitTokenId)
-          setSelectedTokenIds(new Set([newSplitTokenId]))
-          setAnchorTokenId(newSplitTokenId)
-          setIsAtRowStart(true)
-          scrollTokenIntoView(newSplitTokenId)
-        }
-        setStatusMessage('已將字幕列拆分為兩列 (Enter)')
+      commitSegments(nextSegments)
+      setCaretPos({ segId: newSegId, index: 0 })
+      setSelectedTokenIds(new Set())
+      if (secondHalf[0]) {
+        scrollTokenIntoView(secondHalf[0].id)
       }
+      setStatusMessage('已於游標處換行：游標右方文字已移至下一列 (Enter)')
     },
-    [selectedTokenIds, segments, commitSegments, scrollTokenIntoView]
+    [caretPos, selectedTokenIds, segments, commitSegments, scrollTokenIntoView]
   )
+
+  const handleSplitSegmentAtToken = handleSplitSegmentAtCaret
 
   // Merge segment with previous segment (在列首按 Backspace 可與上一列合併)
   const handleMergeWithPreviousSegment = useCallback(
@@ -561,8 +854,7 @@ export default function App() {
       const nextSegments = cloneSegments(segments)
       const prevSeg = nextSegments[segIndex - 1]
       const currSeg = nextSegments[segIndex]
-      const junctionToken =
-        prevSeg.tokens.length > 0 ? prevSeg.tokens[prevSeg.tokens.length - 1] : null
+      const junctionIndex = prevSeg.tokens.length
 
       let mergedCaption: string | null = null
       if (
@@ -575,12 +867,10 @@ export default function App() {
       prevSeg.tokens = [...prevSeg.tokens, ...currSeg.tokens]
       nextSegments.splice(segIndex, 1)
       commitSegments(nextSegments)
-      if (junctionToken) {
-        setCursorTokenId(junctionToken.id)
-        setSelectedTokenIds(new Set([junctionToken.id]))
-        setAnchorTokenId(junctionToken.id)
-        setIsAtRowStart(false)
-        scrollTokenIntoView(junctionToken.id)
+      setCaretPos({ segId: prevSeg.id, index: junctionIndex })
+      setSelectedTokenIds(new Set())
+      if (prevSeg.tokens[junctionIndex]) {
+        scrollTokenIntoView(prevSeg.tokens[junctionIndex].id)
       }
       setStatusMessage(`已將第 ${segIndex + 1} 列合併至上一列`)
     },
@@ -692,8 +982,14 @@ export default function App() {
   // Restore selected or cursor token(s), including clearing shortened silence back to full duration
   const handleRestoreSelectedTokens = useCallback(() => {
     let targetIds = Array.from(selectedTokenIds)
-    if (targetIds.length === 0 && cursorTokenId) {
-      targetIds = [cursorTokenId]
+    if (targetIds.length === 0 && caretPos) {
+      const seg = segments.find((s) => s.id === caretPos.segId)
+      if (seg) {
+        const tok =
+          seg.tokens[caretPos.index] ||
+          (caretPos.index > 0 ? seg.tokens[caretPos.index - 1] : null)
+        if (tok) targetIds = [tok.id]
+      }
     }
     if (targetIds.length === 0) return
 
@@ -728,7 +1024,7 @@ export default function App() {
     } else {
       setStatusMessage(`已還原 ${targetIds.length} 個字元/氣口 (R)`)
     }
-  }, [selectedTokenIds, cursorTokenId, segments, commitSegments])
+  }, [selectedTokenIds, caretPos, segments, commitSegments])
 
   // Inline Text Edit (改錯字：僅修改 Token 的 text 屬性，不改變其 start/end 與 deleted 狀態)
   const startEditingToken = (tok: Token) => {
@@ -954,7 +1250,12 @@ export default function App() {
 
     commitSegments(nextSegments)
     setSelectedTokenIds(new Set(newTokens.map((t) => t.id)))
-    setCursorTokenId(newTokens[newTokens.length - 1].id)
+    const seg = nextSegments.find((s) => s.id === targetSegId)
+    const lastNewTok = newTokens[newTokens.length - 1]
+    const tokIndex = seg ? seg.tokens.findIndex((t) => t.id === lastNewTok.id) : -1
+    if (tokIndex !== -1) {
+      setCaretPos({ segId: targetSegId, index: tokIndex + 1 })
+    }
     setStatusMessage(`已將文字修改為「${trimmed}」（時間軸已自動均分重算）`)
     setShowPhraseModal(false)
   }
@@ -997,7 +1298,9 @@ export default function App() {
     setFindMatchIdx(nextIdx)
     const target = searchMatches[nextIdx]
     setSelectedTokenIds(new Set(target.tokenIds))
-    setCursorTokenId(target.tokenIds[0])
+    const seg = segments[target.segIndex]
+    const tokIndex = seg ? seg.tokens.findIndex((t) => t.id === target.tokenIds[0]) : 0
+    setCaretPos({ segId: target.segId, index: tokIndex })
     scrollTokenIntoView(target.tokenIds[0])
     if (videoRef.current) {
       videoRef.current.currentTime = target.start
@@ -1011,7 +1314,9 @@ export default function App() {
     setFindMatchIdx(prevIdx)
     const target = searchMatches[prevIdx]
     setSelectedTokenIds(new Set(target.tokenIds))
-    setCursorTokenId(target.tokenIds[0])
+    const seg = segments[target.segIndex]
+    const tokIndex = seg ? seg.tokens.findIndex((t) => t.id === target.tokenIds[0]) : 0
+    setCaretPos({ segId: target.segId, index: tokIndex })
     scrollTokenIntoView(target.tokenIds[0])
     if (videoRef.current) {
       videoRef.current.currentTime = target.start
@@ -1132,27 +1437,39 @@ export default function App() {
     setShowFindReplace(false)
   }
 
-  // Click / Drag token selection & video seek
+  // Click / Drag token selection & video seek (Vrew standard: Seek only, never autoplay)
   const handleTokenMouseDown = (
     e: React.MouseEvent,
+    seg: Segment,
+    tokIdx: number,
     tok: Token,
     flatIdx: number
   ) => {
     if (editingTokenId === tok.id) return
 
-    // Seek video to clicked token's start and play (點擊任意字 Token，播放器立即 seek 到該 Token 的 start 並開始播放)
+    // 1. Calculate click position (left half vs right half)
+    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
+    const clickX = e.clientX - rect.left
+    const isLeftHalf = clickX < rect.width / 2
+    const nextCaretIndex = isLeftHalf ? tokIdx : tokIdx + 1
+
+    // 2. Set caret position
+    setCaretPos({ segId: seg.id, index: nextCaretIndex })
+
+    // 3. Seek video to clicked position paused (NEVER auto-play! Spacebar toggles playback)
     if (videoRef.current) {
-      videoRef.current.currentTime = tok.start
-      setCurrentTime(tok.start)
-      if (videoRef.current.paused) {
-        videoRef.current.play().then(() => setIsPlaying(true)).catch(() => {})
+      if (!videoRef.current.paused) {
+        videoRef.current.pause()
+        setIsPlaying(false)
       }
+      const seekTarget = isLeftHalf
+        ? tok.start
+        : (seg.tokens[tokIdx + 1]?.start ?? tok.end)
+      videoRef.current.currentTime = seekTarget
+      setCurrentTime(seekTarget)
     }
 
-    // Set cursor position to clicked token
-    setCursorTokenId(tok.id)
-    setIsAtRowStart(false)
-
+    // 4. Shift-click: range selection
     if (e.shiftKey && anchorTokenId) {
       const anchorIdx = flatTokens.findIndex((item) => item.token.id === anchorTokenId)
       if (anchorIdx !== -1) {
@@ -1167,6 +1484,7 @@ export default function App() {
       }
     }
 
+    // 5. Cmd / Ctrl click: toggle selection
     if (e.metaKey || e.ctrlKey) {
       setSelectedTokenIds((prev) => {
         const next = new Set(prev)
@@ -1178,12 +1496,24 @@ export default function App() {
       return
     }
 
+    // 6. Normal click:
+    // If silence token, select it so quick silence bar / delete button is available
+    // If word token, do NOT select bounding box, so the large Vrew caret stands out!
     setIsDraggingSelect(true)
     setAnchorTokenId(tok.id)
-    setSelectedTokenIds(new Set([tok.id]))
+    if (tok.type === 'silence') {
+      setSelectedTokenIds(new Set([tok.id]))
+    } else {
+      setSelectedTokenIds(new Set())
+    }
   }
 
-  const handleTokenMouseEnter = (flatIdx: number) => {
+  const handleTokenMouseEnter = (
+    seg: Segment,
+    tokIdx: number,
+    tok: Token,
+    flatIdx: number
+  ) => {
     if (!isDraggingSelect || !anchorTokenId) return
     const anchorIdx = flatTokens.findIndex((item) => item.token.id === anchorTokenId)
     if (anchorIdx === -1) return
@@ -1194,10 +1524,7 @@ export default function App() {
       rangeIds.add(flatTokens[i].token.id)
     }
     setSelectedTokenIds(rangeIds)
-    if (flatTokens[flatIdx]) {
-      setCursorTokenId(flatTokens[flatIdx].token.id)
-      setIsAtRowStart(false)
-    }
+    setCaretPos({ segId: seg.id, index: tokIdx + 1 })
   }
 
   useEffect(() => {
@@ -1208,10 +1535,8 @@ export default function App() {
 
   // Word-Style Backspace: Continuous backward deletion & row merge at start
   const handleWordStyleBackspace = useCallback(() => {
-    if (flatTokens.length === 0) return
-
     // 1. Multi-token range selection: delete all selected tokens
-    if (selectedTokenIds.size > 1) {
+    if (selectedTokenIds.size > 0) {
       const selectedIndices: number[] = []
       flatTokens.forEach((item, idx) => {
         if (selectedTokenIds.has(item.token.id)) {
@@ -1222,6 +1547,7 @@ export default function App() {
 
       const minIdx = Math.min(...selectedIndices)
       const count = selectedTokenIds.size
+      const firstSelected = flatTokens[minIdx]
 
       // Mark all selected as deleted = true
       const nextSegments = segments.map((seg) => ({
@@ -1232,85 +1558,62 @@ export default function App() {
       }))
       commitSegments(nextSegments)
 
-      // Move cursor right before the deleted block
-      const targetIdx = Math.max(0, minIdx - 1)
-      if (flatTokens[targetIdx]) {
-        const targetTok = flatTokens[targetIdx].token
-        setCursorTokenId(targetTok.id)
-        setSelectedTokenIds(new Set([targetTok.id]))
-        setAnchorTokenId(targetTok.id)
-        setIsAtRowStart(minIdx === 0)
-        scrollTokenIntoView(targetTok.id)
+      // Move caret to start of deleted block
+      if (firstSelected) {
+        setCaretPos({ segId: firstSelected.segId, index: firstSelected.tokIndex })
         if (videoRef.current) {
-          videoRef.current.currentTime = targetTok.start
-          setCurrentTime(targetTok.start)
+          videoRef.current.currentTime = firstSelected.token.start
+          setCurrentTime(firstSelected.token.start)
         }
-      } else {
-        setSelectedTokenIds(new Set())
-        setCursorTokenId(null)
       }
+      setSelectedTokenIds(new Set())
       setStatusMessage(`已剪除選取的 ${count} 個字元/氣口`)
       return
     }
 
-    // 2. Single token cursor mode:
-    let currIdx = cursorFlatIndex
-    if (currIdx === null || currIdx < 0 || currIdx >= flatTokens.length) {
-      if (selectedTokenIds.size === 1) {
-        const onlyId = Array.from(selectedTokenIds)[0]
-        const foundIdx = flatTokens.findIndex((item) => item.token.id === onlyId)
-        if (foundIdx !== -1) currIdx = foundIdx
-      }
-    }
+    // 2. Single cursor mode
+    if (!caretPos) return
+    const segIndex = segments.findIndex((s) => s.id === caretPos.segId)
+    if (segIndex === -1) return
+    const seg = segments[segIndex]
 
-    if (currIdx === null || currIdx < 0 || currIdx >= flatTokens.length) return
-    const currentItem = flatTokens[currIdx]
-
-    // Case A: Cursor is at row start (left border of first token) -> Merge with previous row
-    if (isAtRowStart) {
-      if (currentItem.segIndex > 0) {
-        handleMergeWithPreviousSegment(currentItem.segIndex)
+    // Case A: At row start (index === 0) -> Merge with previous row
+    if (caretPos.index === 0) {
+      if (segIndex > 0) {
+        handleMergeWithPreviousSegment(segIndex)
       }
       return
     }
 
-    // Case B: Cursor at currentItem -> mark deleted = true (continuous delete, no toggling!)
-    const targetTokenId = currentItem.token.id
-    const nextSegments = segments.map((seg) => ({
-      ...seg,
-      tokens: seg.tokens.map((tok) =>
-        tok.id === targetTokenId ? { ...tok, deleted: true } : tok
-      ),
-    }))
+    // Case B: At index > 0 -> Mark token to the left (tokens[index - 1]) as deleted
+    const targetTok = seg.tokens[caretPos.index - 1]
+    if (!targetTok) return
+
+    const nextSegments = segments.map((s) =>
+      s.id === seg.id
+        ? {
+            ...s,
+            tokens: s.tokens.map((tok) =>
+              tok.id === targetTok.id ? { ...tok, deleted: true } : tok
+            ),
+          }
+        : s
+    )
     commitSegments(nextSegments)
 
-    if (currentItem.tokIndex > 0) {
-      // Step cursor left to previous token in this row
-      const nextIdx = currIdx - 1
-      const prevTok = flatTokens[nextIdx].token
-      setCursorTokenId(prevTok.id)
-      setIsAtRowStart(false)
-      setSelectedTokenIds(new Set([prevTok.id]))
-      setAnchorTokenId(prevTok.id)
-      scrollTokenIntoView(prevTok.id)
-      if (videoRef.current) {
-        videoRef.current.currentTime = prevTok.start
-        setCurrentTime(prevTok.start)
-      }
-    } else {
-      // Deleted token 0 of this row -> Caret moves to left border (row start)
-      setIsAtRowStart(true)
-      setCursorTokenId(targetTokenId)
-      setSelectedTokenIds(new Set([targetTokenId]))
-      setAnchorTokenId(targetTokenId)
+    // Step caret left
+    const newIndex = caretPos.index - 1
+    setCaretPos({ segId: seg.id, index: newIndex })
+    if (videoRef.current) {
+      videoRef.current.currentTime = targetTok.start
+      setCurrentTime(targetTok.start)
     }
-
-    setStatusMessage(`已剪除「${currentItem.token.text}」，游標往左推進`)
+    scrollTokenIntoView(targetTok.id)
+    setStatusMessage(`已剪除「${targetTok.text}」，游標往左推進`)
   }, [
     flatTokens,
     selectedTokenIds,
-    cursorFlatIndex,
-    isAtRowStart,
+    caretPos,
     segments,
     commitSegments,
     handleMergeWithPreviousSegment,
@@ -1319,59 +1622,46 @@ export default function App() {
 
   // Word-Style Forward Delete (Delete key)
   const handleWordStyleForwardDelete = useCallback(() => {
-    if (flatTokens.length === 0) return
-
-    if (selectedTokenIds.size > 1) {
+    if (selectedTokenIds.size > 0) {
       handleWordStyleBackspace()
       return
     }
 
-    let currIdx = cursorFlatIndex
-    if (currIdx === null || currIdx < 0 || currIdx >= flatTokens.length) {
-      if (selectedTokenIds.size === 1) {
-        const onlyId = Array.from(selectedTokenIds)[0]
-        const foundIdx = flatTokens.findIndex((item) => item.token.id === onlyId)
-        if (foundIdx !== -1) currIdx = foundIdx
-      }
-    }
+    if (!caretPos) return
+    const segIndex = segments.findIndex((s) => s.id === caretPos.segId)
+    if (segIndex === -1) return
+    const seg = segments[segIndex]
 
-    if (currIdx === null || currIdx < 0 || currIdx >= flatTokens.length) return
-
-    if (isAtRowStart) {
-      // Forward delete deletes the token directly ahead of cursor (which is token 0)
-      const targetTokenId = flatTokens[currIdx].token.id
-      const nextSegments = segments.map((seg) => ({
-        ...seg,
-        tokens: seg.tokens.map((tok) =>
-          tok.id === targetTokenId ? { ...tok, deleted: true } : tok
-        ),
-      }))
+    // Case A: Token to the right of caret exists (index < seg.tokens.length)
+    if (caretPos.index < seg.tokens.length) {
+      const targetTok = seg.tokens[caretPos.index]
+      const nextSegments = segments.map((s) =>
+        s.id === seg.id
+          ? {
+              ...s,
+              tokens: s.tokens.map((tok) =>
+                tok.id === targetTok.id ? { ...tok, deleted: true } : tok
+              ),
+            }
+          : s
+      )
       commitSegments(nextSegments)
-      setIsAtRowStart(false)
-      setStatusMessage(`已向後剪除「${flatTokens[currIdx].token.text}」`)
+      setStatusMessage(`已向後剪除「${targetTok.text}」`)
       return
     }
 
-    // Forward delete deletes the token to the right of cursor
-    if (currIdx + 1 < flatTokens.length) {
-      const nextTok = flatTokens[currIdx + 1].token
-      const nextSegments = segments.map((seg) => ({
-        ...seg,
-        tokens: seg.tokens.map((tok) =>
-          tok.id === nextTok.id ? { ...tok, deleted: true } : tok
-        ),
-      }))
-      commitSegments(nextSegments)
-      setStatusMessage(`已向後剪除「${nextTok.text}」`)
+    // Case B: At end of row (index === seg.tokens.length) -> Pull next row up
+    if (caretPos.index === seg.tokens.length && segIndex < segments.length - 1) {
+      handleMergeWithPreviousSegment(segIndex + 1)
+      setStatusMessage('已將下一列合併至當前列 (Delete)')
     }
   }, [
-    flatTokens,
     selectedTokenIds,
-    cursorFlatIndex,
-    isAtRowStart,
+    caretPos,
     segments,
     commitSegments,
     handleWordStyleBackspace,
+    handleMergeWithPreviousSegment,
   ])
 
   // Global Keyboard Shortcuts (Module B + Word-Style Caret Navigation)
@@ -1396,18 +1686,17 @@ export default function App() {
         return
       }
 
-      // Enter: Split subtitle row at cursor or selected token
+      // Snapshot: Cmd+S / Ctrl+S
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        handleCreateSnapshot()
+        return
+      }
+
+      // Enter: Split subtitle row at caret (游標左方文字留原列，游標右方移至下一列)
       if (e.key === 'Enter') {
         e.preventDefault()
-        let targetId: string | null = null
-        if (cursorFlatIndex !== null && flatTokens[cursorFlatIndex]) {
-          targetId = flatTokens[cursorFlatIndex].token.id
-        } else if (selectedTokenIds.size === 1) {
-          targetId = Array.from(selectedTokenIds)[0]
-        }
-        if (targetId) {
-          handleSplitSegmentAtToken(targetId)
-        }
+        handleSplitSegmentAtCaret()
         return
       }
 
@@ -1428,144 +1717,95 @@ export default function App() {
       // ArrowLeft: Navigate left
       if (e.key === 'ArrowLeft') {
         e.preventDefault()
-        if (flatTokens.length === 0) return
-        const currIdx = cursorFlatIndex ?? 0
-        if (e.shiftKey) {
-          const newIdx = Math.max(0, currIdx - 1)
-          const targetTok = flatTokens[newIdx]?.token
-          if (targetTok) {
-            setCursorTokenId(targetTok.id)
-            setIsAtRowStart(false)
-            const anchorIdx = anchorTokenId
-              ? flatTokens.findIndex((it) => it.token.id === anchorTokenId)
-              : currIdx
-            const sIdx = Math.min(anchorIdx, newIdx)
-            const eIdx = Math.max(anchorIdx, newIdx)
-            const rangeIds = new Set<string>()
-            for (let i = sIdx; i <= eIdx; i++) {
-              rangeIds.add(flatTokens[i].token.id)
-            }
-            setSelectedTokenIds(rangeIds)
-            scrollTokenIntoView(targetTok.id)
-            if (videoRef.current) {
-              videoRef.current.currentTime = targetTok.start
-              setCurrentTime(targetTok.start)
-            }
+        if (!caretPos) {
+          if (segments.length > 0 && segments[0].tokens.length > 0) {
+            setCaretPos({ segId: segments[0].id, index: 0 })
           }
           return
         }
+        const segIndex = segments.findIndex((s) => s.id === caretPos.segId)
+        if (segIndex === -1) return
+        const seg = segments[segIndex]
 
-        if (isAtRowStart) {
-          if (currIdx > 0) {
-            const prevIdx = currIdx - 1
-            const prevTok = flatTokens[prevIdx].token
-            setCursorTokenId(prevTok.id)
-            setIsAtRowStart(false)
-            setSelectedTokenIds(new Set([prevTok.id]))
-            setAnchorTokenId(prevTok.id)
-            scrollTokenIntoView(prevTok.id)
-            if (videoRef.current) {
-              videoRef.current.currentTime = prevTok.start
-              setCurrentTime(prevTok.start)
-            }
+        if (caretPos.index > 0) {
+          const newIdx = caretPos.index - 1
+          setCaretPos({ segId: seg.id, index: newIdx })
+          const tok = seg.tokens[newIdx]
+          if (tok && videoRef.current) {
+            videoRef.current.currentTime = tok.start
+            setCurrentTime(tok.start)
+            scrollTokenIntoView(tok.id)
           }
-          return
-        }
-
-        const currentItem = flatTokens[currIdx]
-        if (currentItem && currentItem.tokIndex === 0) {
-          setIsAtRowStart(true)
-        } else if (currIdx > 0) {
-          const prevIdx = currIdx - 1
-          const prevTok = flatTokens[prevIdx].token
-          setCursorTokenId(prevTok.id)
-          setIsAtRowStart(false)
-          setSelectedTokenIds(new Set([prevTok.id]))
-          setAnchorTokenId(prevTok.id)
-          scrollTokenIntoView(prevTok.id)
-          if (videoRef.current) {
-            videoRef.current.currentTime = prevTok.start
-            setCurrentTime(prevTok.start)
+        } else if (segIndex > 0) {
+          const prevSeg = segments[segIndex - 1]
+          const newIdx = prevSeg.tokens.length
+          setCaretPos({ segId: prevSeg.id, index: newIdx })
+          const tok = prevSeg.tokens[prevSeg.tokens.length - 1]
+          if (tok && videoRef.current) {
+            videoRef.current.currentTime = tok.end
+            setCurrentTime(tok.end)
+            scrollTokenIntoView(tok.id)
           }
         }
+        setSelectedTokenIds(new Set())
         return
       }
 
       // ArrowRight: Navigate right
       if (e.key === 'ArrowRight') {
         e.preventDefault()
-        if (flatTokens.length === 0) return
-        const currIdx = cursorFlatIndex ?? 0
-        if (e.shiftKey) {
-          const newIdx = Math.min(flatTokens.length - 1, currIdx + 1)
-          const targetTok = flatTokens[newIdx]?.token
-          if (targetTok) {
-            setCursorTokenId(targetTok.id)
-            setIsAtRowStart(false)
-            const anchorIdx = anchorTokenId
-              ? flatTokens.findIndex((it) => it.token.id === anchorTokenId)
-              : currIdx
-            const sIdx = Math.min(anchorIdx, newIdx)
-            const eIdx = Math.max(anchorIdx, newIdx)
-            const rangeIds = new Set<string>()
-            for (let i = sIdx; i <= eIdx; i++) {
-              rangeIds.add(flatTokens[i].token.id)
-            }
-            setSelectedTokenIds(rangeIds)
-            scrollTokenIntoView(targetTok.id)
-            if (videoRef.current) {
-              videoRef.current.currentTime = targetTok.start
-              setCurrentTime(targetTok.start)
-            }
+        if (!caretPos) {
+          if (segments.length > 0 && segments[0].tokens.length > 0) {
+            setCaretPos({ segId: segments[0].id, index: 0 })
           }
           return
         }
+        const segIndex = segments.findIndex((s) => s.id === caretPos.segId)
+        if (segIndex === -1) return
+        const seg = segments[segIndex]
 
-        if (isAtRowStart) {
-          setIsAtRowStart(false)
-          return
-        }
-
-        if (currIdx < flatTokens.length - 1) {
-          const nextIdx = currIdx + 1
-          const nextTok = flatTokens[nextIdx].token
-          setCursorTokenId(nextTok.id)
-          setIsAtRowStart(false)
-          setSelectedTokenIds(new Set([nextTok.id]))
-          setAnchorTokenId(nextTok.id)
-          scrollTokenIntoView(nextTok.id)
-          if (videoRef.current) {
-            videoRef.current.currentTime = nextTok.start
-            setCurrentTime(nextTok.start)
+        if (caretPos.index < seg.tokens.length) {
+          const newIdx = caretPos.index + 1
+          setCaretPos({ segId: seg.id, index: newIdx })
+          const tok = seg.tokens[caretPos.index]
+          if (tok && videoRef.current) {
+            videoRef.current.currentTime = tok.start
+            setCurrentTime(tok.start)
+            scrollTokenIntoView(tok.id)
+          }
+        } else if (segIndex < segments.length - 1) {
+          const nextSeg = segments[segIndex + 1]
+          setCaretPos({ segId: nextSeg.id, index: 0 })
+          const tok = nextSeg.tokens[0]
+          if (tok && videoRef.current) {
+            videoRef.current.currentTime = tok.start
+            setCurrentTime(tok.start)
+            scrollTokenIntoView(tok.id)
           }
         }
+        setSelectedTokenIds(new Set())
         return
       }
 
       // ArrowUp / ArrowDown: Row-to-row navigation
       if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
         e.preventDefault()
-        if (flatTokens.length === 0) return
-        const currIdx = cursorFlatIndex ?? 0
-        const curr = flatTokens[currIdx]
-        if (!curr) return
-        const targetSegIdx = e.key === 'ArrowUp' ? curr.segIndex - 1 : curr.segIndex + 1
+        if (!caretPos) return
+        const segIndex = segments.findIndex((s) => s.id === caretPos.segId)
+        if (segIndex === -1) return
+        const targetSegIdx = e.key === 'ArrowUp' ? segIndex - 1 : segIndex + 1
         if (targetSegIdx >= 0 && targetSegIdx < segments.length) {
           const targetSeg = segments[targetSegIdx]
-          if (targetSeg.tokens.length > 0) {
-            const targetTokIndex = Math.min(curr.tokIndex, targetSeg.tokens.length - 1)
-            const targetTok = targetSeg.tokens[targetTokIndex]
-            setCursorTokenId(targetTok.id)
-            setIsAtRowStart(false)
-            setSelectedTokenIds(new Set([targetTok.id]))
-            setAnchorTokenId(targetTok.id)
-            scrollTokenIntoView(targetTok.id)
-            if (videoRef.current) {
-              videoRef.current.currentTime = targetTok.start
-              setCurrentTime(targetTok.start)
-            }
+          const newIdx = Math.min(caretPos.index, targetSeg.tokens.length)
+          setCaretPos({ segId: targetSeg.id, index: newIdx })
+          const tok = targetSeg.tokens[Math.min(newIdx, targetSeg.tokens.length - 1)]
+          if (tok && videoRef.current) {
+            videoRef.current.currentTime = tok.start
+            setCurrentTime(tok.start)
+            scrollTokenIntoView(tok.id)
           }
         }
+        setSelectedTokenIds(new Set())
         return
       }
 
@@ -1616,6 +1856,10 @@ export default function App() {
 
       // Escape: Close modals, search bar, or clear token selection
       if (e.key === 'Escape') {
+        if (showSnapshotModal) {
+          setShowSnapshotModal(false)
+          return
+        }
         if (showFindReplace) {
           setShowFindReplace(false)
           return
@@ -1633,8 +1877,7 @@ export default function App() {
           return
         }
         setSelectedTokenIds(new Set())
-        setCursorTokenId(null)
-        setIsAtRowStart(false)
+        setCaretPos(null)
       }
     }
 
@@ -1642,20 +1885,17 @@ export default function App() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [
     selectedTokenIds,
-    cursorTokenId,
-    cursorFlatIndex,
-    isAtRowStart,
-    anchorTokenId,
-    flatTokens,
+    caretPos,
     segments,
     handleUndo,
     handleRedo,
-    handleSplitSegmentAtToken,
+    handleCreateSnapshot,
+    handleSplitSegmentAtCaret,
     handleWordStyleBackspace,
     handleWordStyleForwardDelete,
     toggleSelectedDeleted,
-    commitSegments,
     scrollTokenIntoView,
+    showSnapshotModal,
     showFindReplace,
     showPhraseModal,
     showShortenModal,
@@ -1966,6 +2206,46 @@ export default function App() {
             )}
             <span>{isCollapsedDeleted ? '展開已剪' : '摺疊已剪'}</span>
           </button>
+
+          {/* Snapshot Quick Save & History Modal */}
+          <div className="flex items-center gap-1.5 shrink-0 pl-1 border-l border-slate-800">
+            <button
+              onClick={() => handleCreateSnapshot()}
+              disabled={!project || isSavingSnapshot}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#1c2130] hover:bg-[#252c40] border border-cyan-500/40 text-cyan-300 text-xs font-medium transition shrink-0 whitespace-nowrap shadow-sm shadow-cyan-500/10"
+              title="立即記錄當前所有換行與改字狀態 (⌘S)"
+            >
+              <Camera className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+              <span>{isSavingSnapshot ? '儲存中...' : '儲存快照 (⌘S)'}</span>
+            </button>
+
+            <button
+              onClick={() => {
+                fetchSnapshots()
+                fetchRecentProjects()
+                setShowSnapshotModal(true)
+              }}
+              disabled={!project}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#1c2130] hover:bg-[#252c40] border border-slate-700/80 text-slate-300 hover:text-white text-xs transition shrink-0 whitespace-nowrap"
+              title="查看換行/改字紀錄與還原至任意快照"
+            >
+              <History className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span>快照歷程</span>
+              {snapshots.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 text-[10px] font-mono font-bold border border-amber-500/30">
+                  {snapshots.length}
+                </span>
+              )}
+            </button>
+
+            {/* Auto-save Status Indicator */}
+            {lastSavedTime && (
+              <div className="hidden xl:flex items-center gap-1 text-[11px] text-slate-400 font-mono pl-1">
+                <CheckCircle2 className="w-3 h-3 text-emerald-400 shrink-0" />
+                <span>已自動存檔 {lastSavedTime}</span>
+              </div>
+            )}
+          </div>
         </div>
 
         {/* Right Export Actions */}
@@ -3066,7 +3346,12 @@ export default function App() {
                                 onClick={() => {
                                   const ids = new Set(item.tokens.map((t) => t.id))
                                   setSelectedTokenIds(ids)
-                                  setCursorTokenId(item.tokens[0].id)
+                                  const collIdx = seg.tokens.findIndex(
+                                    (t) => t.id === item.tokens[0].id
+                                  )
+                                  if (collIdx !== -1) {
+                                    setCaretPos({ segId: seg.id, index: collIdx })
+                                  }
                                   setStatusMessage(`已選取已剪除的 ${count} 個字元/氣口（按 R 可還原）`)
                                 }}
                                 title={`已剪除內容：「${delText}」· 點擊選取，按 R 還原`}
@@ -3082,6 +3367,7 @@ export default function App() {
                           const flatIdx = flatTokens.findIndex(
                             (it) => it.token.id === tok.id
                           )
+                          const tokIdx = seg.tokens.findIndex((t) => t.id === tok.id)
                           const isSelected = selectedTokenIds.has(tok.id)
                           const isPlayingNow = activePlaybackInfo.activeTokenId === tok.id
                           const isEditingThis = editingTokenId === tok.id
@@ -3121,7 +3407,12 @@ export default function App() {
                             )
                           }
 
-                          const isCaretHere = flatIdx === cursorFlatIndex
+                          const isCaretLeft =
+                            caretPos?.segId === seg.id && caretPos?.index === tokIdx
+                          const isCaretRight =
+                            caretPos?.segId === seg.id &&
+                            tokIdx === seg.tokens.length - 1 &&
+                            caretPos?.index === seg.tokens.length
                           const isShortened =
                             tok.type === 'silence' &&
                             !tok.deleted &&
@@ -3134,8 +3425,12 @@ export default function App() {
                               <div
                                 key={tok.id}
                                 id={`tok-${tok.id}`}
-                                onMouseDown={(e) => handleTokenMouseDown(e, tok, flatIdx)}
-                                onMouseEnter={() => handleTokenMouseEnter(flatIdx)}
+                                onMouseDown={(e) =>
+                                  handleTokenMouseDown(e, seg, tokIdx, tok, flatIdx)
+                                }
+                                onMouseEnter={() =>
+                                  handleTokenMouseEnter(seg, tokIdx, tok, flatIdx)
+                                }
                                 title={
                                   isShortened
                                     ? `已縮短氣口：原 ${(tok.end - tok.start).toFixed(2)}s ➔ 保留 ${tok.keep_duration!.toFixed(2)}s (點選按 R 恢復原長度)`
@@ -3155,13 +3450,8 @@ export default function App() {
                               >
                                 {isShortened && <Clock className="w-3 h-3 text-cyan-400 shrink-0" />}
                                 <span>{tok.text}</span>
-                                {isCaretHere && (
-                                  <span
-                                    className={`word-caret ${
-                                      isAtRowStart ? 'caret-left' : 'caret-right'
-                                    }`}
-                                  />
-                                )}
+                                {isCaretLeft && <span className="word-caret caret-left" />}
+                                {isCaretRight && <span className="word-caret caret-right" />}
 
                                 {/* Corner Hover Quick Cut / Restore Button */}
                                 <button
@@ -3194,8 +3484,12 @@ export default function App() {
                             <div
                               key={tok.id}
                               id={`tok-${tok.id}`}
-                              onMouseDown={(e) => handleTokenMouseDown(e, tok, flatIdx)}
-                              onMouseEnter={() => handleTokenMouseEnter(flatIdx)}
+                              onMouseDown={(e) =>
+                                handleTokenMouseDown(e, seg, tokIdx, tok, flatIdx)
+                              }
+                              onMouseEnter={() =>
+                                handleTokenMouseEnter(seg, tokIdx, tok, flatIdx)
+                              }
                               onDoubleClick={() => startEditingToken(tok)}
                               title={`${tok.text} (${tok.start.toFixed(2)}s - ${tok.end.toFixed(2)}s) · 雙擊改字，按 E 改詞`}
                               className={`group/tok cursor-pointer min-w-[34px] px-2.5 py-1.5 rounded-lg text-sm font-semibold border transition-all text-center relative ${
@@ -3209,13 +3503,8 @@ export default function App() {
                               }`}
                             >
                               <span>{tok.text}</span>
-                              {isCaretHere && (
-                                <span
-                                  className={`word-caret ${
-                                    isAtRowStart ? 'caret-left' : 'caret-right'
-                                  }`}
-                                />
-                              )}
+                              {isCaretLeft && <span className="word-caret caret-left" />}
+                              {isCaretRight && <span className="word-caret caret-right" />}
 
                               {/* Corner Hover Quick Cut / Restore Button */}
                               <button
@@ -3881,6 +4170,248 @@ export default function App() {
         </div>
       )}
 
+      {/* SNAPSHOT & RECOVERY MODAL */}
+      {showSnapshotModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-md flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
+          <div className="bg-[#121622] border border-slate-700/80 rounded-2xl max-w-3xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+            {/* Modal Header */}
+            <div className="px-6 py-4 bg-[#161b2a] border-b border-slate-800 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-cyan-500/20 flex items-center justify-center border border-cyan-500/40">
+                  <History className="w-4 h-4 text-cyan-400" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                    <span>快照歷程與還原中心 (Snapshots & Recovery)</span>
+                    <span className="text-[10px] px-2 py-0.5 rounded-full bg-cyan-500/15 text-cyan-300 border border-cyan-500/30 font-mono">
+                      {snapshots.length} 份紀錄
+                    </span>
+                  </h3>
+                  <p className="text-[11px] text-slate-400">
+                    記錄每次換行、改字、自訂字幕與剪輯狀態，匯出前自動強制備份，隨時一鍵還原
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowSnapshotModal(false)}
+                className="p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Manual Snapshot & File Import Bar */}
+            <div className="px-6 py-3 bg-[#191f30] border-b border-slate-800/80 flex flex-wrap items-center justify-between gap-3 shrink-0">
+              <div className="flex items-center gap-2 flex-1 min-w-[260px]">
+                <input
+                  type="text"
+                  placeholder="輸入快照備註（例：完成前三段剪輯與換行）"
+                  value={newSnapshotLabel}
+                  onChange={(e) => setNewSnapshotLabel(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      handleCreateSnapshot()
+                    }
+                  }}
+                  className="flex-1 px-3 py-1.5 rounded-lg bg-[#0e121c] border border-slate-700/80 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-cyan-400"
+                />
+                <button
+                  onClick={() => handleCreateSnapshot()}
+                  disabled={isSavingSnapshot}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-bold text-xs transition shadow-sm"
+                >
+                  <Camera className="w-3.5 h-3.5" />
+                  <span>建立快照</span>
+                </button>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <label className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-medium border border-slate-700 cursor-pointer transition">
+                  <FileUp className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>匯入 .werv.json</span>
+                  <input
+                    type="file"
+                    accept=".json,.werv.json"
+                    onChange={handleImportSnapshotFile}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
+
+            {/* Snapshots List Scroll Area */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-3.5 custom-scrollbar">
+              {snapshots.length === 0 ? (
+                <div className="text-center py-12 text-slate-500 text-xs space-y-2">
+                  <Camera className="w-8 h-8 mx-auto text-slate-600 opacity-60" />
+                  <p>目前此專案尚未建立快照紀錄</p>
+                  <p className="text-[11px] text-slate-600">
+                    按鍵盤 <kbd className="px-1.5 py-0.5 bg-slate-800 rounded text-slate-300">⌘S</kbd> 或點擊上方「建立快照」立即記錄當前進度
+                  </p>
+                </div>
+              ) : (
+                snapshots.map((snap) => {
+                  const getTriggerBadge = (trigger: string) => {
+                    switch (trigger) {
+                      case 'initial':
+                        return (
+                          <span className="px-2 py-0.5 rounded-md bg-slate-700/50 text-slate-300 border border-slate-600/50 text-[10px] font-semibold">
+                            初始語音辨識基準
+                          </span>
+                        )
+                      case 'pre_export':
+                        return (
+                          <span className="px-2 py-0.5 rounded-md bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-semibold">
+                            匯出前自動備份
+                          </span>
+                        )
+                      case 'auto':
+                        return (
+                          <span className="px-2 py-0.5 rounded-md bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-semibold">
+                            還原前系統備份
+                          </span>
+                        )
+                      default:
+                        return (
+                          <span className="px-2 py-0.5 rounded-md bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 text-[10px] font-semibold">
+                            手動快照
+                          </span>
+                        )
+                    }
+                  }
+
+                  const rowDeltaText =
+                    snap.summary.row_delta > 0
+                      ? `較初始 +${snap.summary.row_delta} 列 (拆行)`
+                      : snap.summary.row_delta < 0
+                      ? `較初始 ${snap.summary.row_delta} 列 (合併)`
+                      : `與初始列數相同`
+
+                  return (
+                    <div
+                      key={snap.snapshot_id}
+                      className="p-4 rounded-xl bg-[#171c2b] border border-slate-800 hover:border-slate-700/80 transition space-y-3"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          {getTriggerBadge(snap.trigger)}
+                          <span className="font-bold text-white text-sm">
+                            {snap.label}
+                          </span>
+                        </div>
+                        <span className="text-[11px] font-mono text-slate-400">
+                          {snap.created_at}
+                        </span>
+                      </div>
+
+                      {/* Summary Statistics Pills */}
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <span className="px-2.5 py-1 rounded-lg bg-[#0e121c] border border-slate-800 text-slate-300">
+                          📑 <strong className="text-white">{snap.summary.total_rows}</strong> 列字幕 ({rowDeltaText})
+                        </span>
+                        <span className="px-2.5 py-1 rounded-lg bg-[#0e121c] border border-slate-800 text-slate-300">
+                          ✂️ 已剪除 <strong className="text-rose-400">{snap.summary.deleted_words}</strong> 字 / <strong className="text-amber-400">{snap.summary.deleted_silences}</strong> 氣口
+                        </span>
+                        {snap.summary.modified_count > 0 && (
+                          <span className="px-2.5 py-1 rounded-lg bg-[#0e121c] border border-indigo-500/30 text-indigo-300">
+                            ✏️ 改字/自訂字幕 <strong className="text-white">{snap.summary.modified_count}</strong> 處
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Diff Details Preview */}
+                      {snap.summary.modified_details && snap.summary.modified_details.length > 0 && (
+                        <div className="p-2.5 rounded-lg bg-[#0e121c]/70 border border-slate-800/80 space-y-1.5">
+                          <div className="text-[11px] font-semibold text-slate-400 flex items-center gap-1.5">
+                            <span>變更字詞明細：</span>
+                          </div>
+                          <div className="flex flex-wrap gap-1.5">
+                            {snap.summary.modified_details.slice(0, 6).map((det, idx) => (
+                              <span
+                                key={idx}
+                                className="px-2 py-0.5 rounded bg-slate-800/90 text-cyan-200 border border-slate-700/60 text-[11px] font-mono"
+                              >
+                                {det}
+                              </span>
+                            ))}
+                            {snap.summary.modified_details.length > 6 && (
+                              <span className="px-2 py-0.5 text-slate-400 text-[11px]">
+                                + 其他 {snap.summary.modified_details.length - 6} 處...
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Card Action Buttons */}
+                      <div className="flex items-center justify-between pt-1 border-t border-slate-800/60">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => handleRestoreSnapshot(snap.snapshot_id)}
+                            disabled={isRestoringSnapshot}
+                            className="flex items-center gap-1 px-3 py-1 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/40 text-xs font-bold transition shadow-sm"
+                          >
+                            <Zap className="w-3 h-3 fill-current" />
+                            <span>還原此版本</span>
+                          </button>
+                          <button
+                            onClick={() => handleDownloadSnapshotFile(snap)}
+                            className="flex items-center gap-1 px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs border border-slate-700 transition"
+                            title="下載為 .werv.json 本機備份檔案"
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>備份檔</span>
+                          </button>
+                        </div>
+
+                        {snap.trigger !== 'initial' && (
+                          <button
+                            onClick={() => handleDeleteSnapshot(snap.snapshot_id)}
+                            className="p-1.5 rounded-lg hover:bg-rose-500/20 text-slate-500 hover:text-rose-400 transition"
+                            title="刪除此快照"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })
+              )}
+
+              {/* Recent Projects Switcher inside Snapshot Modal */}
+              {recentProjects.length > 1 && (
+                <div className="mt-6 pt-4 border-t border-slate-800">
+                  <h4 className="text-xs font-bold text-slate-400 mb-2 flex items-center gap-1.5">
+                    <Film className="w-3.5 h-3.5 text-indigo-400" />
+                    <span>切換其他本機專案影片：</span>
+                  </h4>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {recentProjects
+                      .filter((p) => p.project_id !== project?.project_id)
+                      .map((p) => (
+                        <button
+                          key={p.project_id}
+                          onClick={() => handleSwitchProject(p.project_id)}
+                          className="flex items-center justify-between p-2.5 rounded-lg bg-[#161a28] hover:bg-[#1e2336] border border-slate-800 text-left transition"
+                        >
+                          <span className="text-xs text-slate-200 font-medium truncate max-w-[180px]">
+                            {p.filename}
+                          </span>
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            {p.duration.toFixed(0)}s
+                          </span>
+                        </button>
+                      ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* KEYBOARD SHORTCUTS MODAL */}
       {showShortcutsModal && (
         <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-6 z-50">
@@ -3898,6 +4429,12 @@ export default function App() {
               </button>
             </div>
             <div className="space-y-2.5 text-xs">
+              <div className="flex justify-between py-1.5 border-b border-slate-800/70">
+                <span className="text-slate-300">儲存目前編輯快照</span>
+                <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">
+                  ⌘S / Ctrl+S
+                </kbd>
+              </div>
               <div className="flex justify-between py-1.5 border-b border-slate-800/70">
                 <span className="text-slate-300">關鍵字搜尋與批量取代</span>
                 <kbd className="px-2 py-0.5 bg-slate-800 rounded border border-slate-700 font-mono text-cyan-300">

@@ -94,6 +94,8 @@ def compute_keep_ranges(
     if not raw_intervals:
         return []
 
+    raw_intervals.sort(key=lambda x: (x[0], x[1]))
+
     merged: List[List[float]] = [raw_intervals[0]]
     for curr_s, curr_e in raw_intervals[1:]:
         prev_s, prev_e = merged[-1]
@@ -322,12 +324,17 @@ def render_subtitle_overlay_track(
 
     raw_events.sort(key=lambda x: x["start"])
 
-    # Resolve overlapping subtitle events
+    # Resolve overlapping subtitle events ensuring strictly monotonic timeline
     events: List[dict] = []
     for ev in raw_events:
-        if events and ev["start"] < events[-1]["end"]:
-            events[-1]["end"] = max(events[-1]["start"] + 0.05, ev["start"])
-        if ev["end"] > ev["start"] + 0.02:
+        if events:
+            prev = events[-1]
+            if ev["start"] < prev["end"]:
+                if ev["start"] > prev["start"] + 0.04:
+                    prev["end"] = round(ev["start"], 4)
+                else:
+                    ev["start"] = round(prev["end"], 4)
+        if ev["end"] > ev["start"] + 0.03:
             events.append(ev)
 
     if not events:
@@ -376,9 +383,9 @@ def render_subtitle_overlay_track(
         max_lw = max((m[1] for m in line_metrics), default=0)
         total_text_h = sum(m[2] for m in line_metrics) + (len(lines) - 1) * line_spacing
 
-        box_w = max_lw + pad_x * 2
+        box_w = min(video_width - 8, max_lw + pad_x * 2)
         box_h = total_text_h + pad_y * 2
-        box_x = (video_width - box_w) // 2
+        box_x = max(4, min(video_width - box_w - 4, (video_width - box_w) // 2))
         box_y = max(10, min(video_height - box_h - 10, video_height - bottom_offset_px - box_h))
 
         if subtitle_style.style_mode == "box":
@@ -596,6 +603,7 @@ def export_video_and_srt(
 
     try:
         proc = None
+        first_err = ""
         if len(keep_ranges) > 50 or has_subtitles:
             # 優先嘗試 FFmpeg 7+ 的 -/filter_complex
             cmd = _build_cmd("-/filter_complex", script_path)
@@ -603,7 +611,12 @@ def export_video_and_srt(
             proc = subprocess.run(cmd, capture_output=True, text=True)
 
             # 若舊版 FFmpeg (< 7.0) 不認得 -/filter_complex，退回嘗試 -filter_complex_script
-            if proc.returncode != 0 and ("Unrecognized option" in proc.stderr or "filter_complex" in proc.stderr):
+            if proc.returncode != 0 and (
+                "Unrecognized option '-/filter_complex'" in proc.stderr
+                or "Unrecognized option '/filter_complex'" in proc.stderr
+                or "Option '-/filter_complex' not found" in proc.stderr
+            ):
+                first_err = proc.stderr
                 logger.warning("FFmpeg -/filter_complex 未識別，切換嘗試 -filter_complex_script 舊版語法...")
                 cmd = _build_cmd("-filter_complex_script", script_path)
                 proc = subprocess.run(cmd, capture_output=True, text=True)
@@ -614,6 +627,8 @@ def export_video_and_srt(
 
         if proc is None or proc.returncode != 0:
             err_output = proc.stderr if proc else "無法取得 FFmpeg 執行程序"
+            if first_err and "Unrecognized option" in err_output:
+                err_output = f"{first_err}\n\n[Fallback Retry Output]:\n{err_output}"
             cmd_str = " ".join(cmd) if cmd else ""
             logger.error("FFmpeg VideoToolbox 匯出失敗 (exit code: %s)!\n執行指令: %s\n完整 Stderr 輸出:\n%s",
                          getattr(proc, "returncode", "N/A"), cmd_str, err_output)

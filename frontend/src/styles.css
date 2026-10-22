@@ -144,26 +144,48 @@ progress.loading-spinner:indeterminate {
   );
 }
 
-/* Word-style blinking insertion caret */
+/* Vrew-style high-visibility large blinking insertion caret */
 .word-caret {
   position: absolute;
-  top: 15%;
-  bottom: 15%;
-  width: 2.5px;
-  background-color: #22d3ee;
+  top: -8px;
+  bottom: -8px;
+  width: 3.5px;
+  background-color: #00f5d4;
   border-radius: 9999px;
-  box-shadow: 0 0 8px #22d3ee;
-  animation: word-caret-blink 1s ease-in-out infinite;
+  box-shadow: 0 0 10px #00f5d4, 0 0 4px #ffffff;
+  animation: word-caret-blink 0.9s steps(2, start) infinite;
   pointer-events: none;
-  z-index: 30;
+  z-index: 40;
 }
 
-.word-caret.caret-right {
-  right: -3px;
+/* Top & bottom I-beam wings so the caret is unmistakably visible */
+.word-caret::before,
+.word-caret::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 9px;
+  height: 3px;
+  background-color: #00f5d4;
+  border-radius: 9999px;
+  box-shadow: 0 0 6px #00f5d4;
+}
+
+.word-caret::before {
+  top: -2px;
+}
+
+.word-caret::after {
+  bottom: -2px;
 }
 
 .word-caret.caret-left {
-  left: -3px;
+  left: -5.5px;
+}
+
+.word-caret.caret-right {
+  right: -5.5px;
 }
 
 @keyframes word-caret-blink {
