@@ -1445,6 +1445,7 @@ export default function App() {
     tok: Token,
     flatIdx: number
   ) => {
+    e.stopPropagation()
     if (editingTokenId === tok.id) return
 
     // 1. Calculate click position (left half vs right half)
@@ -1505,6 +1506,136 @@ export default function App() {
       setSelectedTokenIds(new Set([tok.id]))
     } else {
       setSelectedTokenIds(new Set())
+    }
+  }
+
+  // Click anywhere in Track 1 container (e.g. gap between words, or row margins) to place caret
+  const handleTrackMouseDown = (e: React.MouseEvent, seg: Segment) => {
+    // Only handle if clicking directly on the track container or gap between tokens
+    const targetEl = e.target as HTMLElement | null
+    if (targetEl && targetEl.closest('.group\\/tok')) {
+      return
+    }
+
+    if (seg.tokens.length === 0) {
+      setCaretPos({ segId: seg.id, index: 0 })
+      return
+    }
+
+    const clientX = e.clientX
+    const clientY = e.clientY
+
+    // Collect DOM rects of tokens in this segment
+    const tokenRects: { index: number; tok: Token; rect: DOMRect }[] = []
+    for (let i = 0; i < seg.tokens.length; i++) {
+      const tok = seg.tokens[i]
+      const el = document.getElementById(`tok-${tok.id}`)
+      if (el) {
+        tokenRects.push({
+          index: i,
+          tok,
+          rect: el.getBoundingClientRect(),
+        })
+      }
+    }
+
+    if (tokenRects.length === 0) return
+
+    // Find tokens on the visual line matching clientY
+    let lineTokens = tokenRects.filter(
+      (item) => clientY >= item.rect.top - 6 && clientY <= item.rect.bottom + 6
+    )
+
+    if (lineTokens.length === 0) {
+      let minDist = Infinity
+      let closestMidY = (tokenRects[0].rect.top + tokenRects[0].rect.bottom) / 2
+      for (const item of tokenRects) {
+        const midY = (item.rect.top + item.rect.bottom) / 2
+        const dist = Math.abs(clientY - midY)
+        if (dist < minDist) {
+          minDist = dist
+          closestMidY = midY
+        }
+      }
+      lineTokens = tokenRects.filter(
+        (item) => Math.abs((item.rect.top + item.rect.bottom) / 2 - closestMidY) < 16
+      )
+    }
+
+    if (lineTokens.length === 0) {
+      lineTokens = tokenRects
+    }
+
+    let targetIndex = 0
+    let seekTime = seg.tokens[0].start
+
+    if (clientX <= lineTokens[0].rect.left) {
+      // Clicked to the left of the line
+      targetIndex = lineTokens[0].index
+      seekTime = lineTokens[0].tok.start
+    } else if (clientX >= lineTokens[lineTokens.length - 1].rect.right) {
+      // Clicked to the right of the line
+      targetIndex = lineTokens[lineTokens.length - 1].index + 1
+      seekTime = lineTokens[lineTokens.length - 1].tok.end
+    } else {
+      // Clicked between two tokens or closest to a boundary
+      let found = false
+      for (let k = 0; k < lineTokens.length - 1; k++) {
+        const prev = lineTokens[k]
+        const next = lineTokens[k + 1]
+        // Between the right edge of prev and the left edge of next (the inter-word gap!)
+        if (clientX >= prev.rect.right && clientX <= next.rect.left) {
+          targetIndex = next.index
+          seekTime = next.tok.start
+          found = true
+          break
+        }
+        // Between token centers
+        if (clientX >= prev.rect.left && clientX <= next.rect.right) {
+          const midPoint = (prev.rect.right + next.rect.left) / 2
+          if (clientX < midPoint) {
+            targetIndex = prev.index + 1
+            seekTime = prev.tok.end
+          } else {
+            targetIndex = next.index
+            seekTime = next.tok.start
+          }
+          found = true
+          break
+        }
+      }
+
+      if (!found) {
+        let minGapDist = Infinity
+        for (let k = 0; k < lineTokens.length; k++) {
+          const item = lineTokens[k]
+          const distLeft = Math.abs(clientX - item.rect.left)
+          const distRight = Math.abs(clientX - item.rect.right)
+          if (distLeft < minGapDist) {
+            minGapDist = distLeft
+            targetIndex = item.index
+            seekTime = item.tok.start
+          }
+          if (distRight < minGapDist) {
+            minGapDist = distRight
+            targetIndex = item.index + 1
+            seekTime = item.tok.end
+          }
+        }
+      }
+    }
+
+    // Set caret position and seek video paused (no autoplay!)
+    setCaretPos({ segId: seg.id, index: targetIndex })
+    setSelectedTokenIds(new Set())
+
+    if (videoRef.current) {
+      if (!videoRef.current.paused) {
+        videoRef.current.pause()
+        setIsPlaying(false)
+      }
+      videoRef.current.currentTime = seekTime
+      setCurrentTime(seekTime)
     }
   }
 
@@ -2080,7 +2211,7 @@ export default function App() {
             </div>
             <div className="flex items-baseline gap-1.5">
               <span className="font-extrabold tracking-tight text-base text-white font-sans">
-                Vrew
+                Werv
               </span>
               <span className="text-[10px] font-semibold tracking-wide px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
                 Studio
@@ -3307,7 +3438,11 @@ export default function App() {
                       <span>Video Cuts</span>
                     </div>
 
-                    <div className="flex-1 flex flex-wrap items-center gap-1.5 min-w-0">
+                    <div
+                      onMouseDown={(e) => handleTrackMouseDown(e, seg)}
+                      className="flex-1 flex flex-wrap items-center gap-1.5 min-w-0 cursor-text py-1 px-1 rounded-xl transition-colors hover:bg-slate-900/30"
+                      title="點擊文字或字間縫隙可放置閃爍編輯游標；按空白鍵播放"
+                    >
                       {(() => {
                         type RenderItem =
                           | { type: 'single'; tok: Token }
@@ -3343,7 +3478,9 @@ export default function App() {
                             return (
                               <div
                                 key={`collapsed-${item.tokens[0].id}-${itemIdx}`}
-                                onClick={() => {
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => {
+                                  e.stopPropagation()
                                   const ids = new Set(item.tokens.map((t) => t.id))
                                   setSelectedTokenIds(ids)
                                   const collIdx = seg.tokens.findIndex(
