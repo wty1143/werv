@@ -1,3 +1,4 @@
+from contextlib import contextmanager
 import json
 import os
 import shutil
@@ -243,6 +244,29 @@ _last_heartbeat_time = time.time()
 _has_received_heartbeat = False
 _shutdown_timer: Optional[threading.Timer] = None
 _shutdown_lock = threading.Lock()
+_active_busy_tasks = 0
+_busy_lock = threading.Lock()
+
+
+@contextmanager
+def busy_task_scope(task_name: str = "task"):
+    """
+    保護背景繁重任務（如影片匯出、ASR 辨識、大檔上傳），
+    確保在任務執行期間看門狗絕不誤判瀏覽器分頁離開而強制退出。
+    """
+    global _active_busy_tasks, _last_heartbeat_time
+    with _busy_lock:
+        _active_busy_tasks += 1
+        _last_heartbeat_time = time.time()
+        _cancel_shutdown()
+    logger.info("進入背景任務保護: %s (目前忙碌任務數: %d)", task_name, _active_busy_tasks)
+    try:
+        yield
+    finally:
+        with _busy_lock:
+            _active_busy_tasks = max(0, _active_busy_tasks - 1)
+            _last_heartbeat_time = time.time()
+        logger.info("退出背景任務保護: %s (剩餘忙碌任務數: %d)", task_name, _active_busy_tasks)
 
 
 def _perform_graceful_shutdown() -> None:
@@ -255,7 +279,7 @@ def _perform_graceful_shutdown() -> None:
         os._exit(0)
 
 
-def _schedule_shutdown(delay: float = 4.0) -> None:
+def _schedule_shutdown(delay: float = 5.0) -> None:
     global _shutdown_timer
     with _shutdown_lock:
         if _shutdown_timer is not None:
@@ -274,13 +298,22 @@ def _cancel_shutdown() -> None:
 
 
 def _heartbeat_watchdog() -> None:
-    """守門線程：初次收到心跳後，若超過 25 秒毫無心跳（瀏覽器崩潰/強制退出），自動退出。"""
+    """守門線程：初次收到心跳後，若超過 300 秒毫無心跳（瀏覽器崩潰/強制退出）且無進行中任務，自動退出。"""
     time.sleep(30)
     while True:
-        time.sleep(3)
+        time.sleep(5)
+        # 若後端正在匯出、辨識或處理任務，不斷續期心跳，防止背景節能與計時器節流誤殺
+        with _busy_lock:
+            if _active_busy_tasks > 0:
+                global _last_heartbeat_time
+                _last_heartbeat_time = time.time()
+                continue
+
         if _has_received_heartbeat:
             elapsed = time.time() - _last_heartbeat_time
-            if elapsed > 25.0:
+            # 提高至 300 秒（5 分鐘），給予背景分頁充足的節能與切換寬限
+            if elapsed > 300.0:
+                logger.warning("心跳超時（%.1f 秒無心跳），觸發自動安全退出...", elapsed)
                 _perform_graceful_shutdown()
                 break
 
@@ -301,85 +334,93 @@ def heartbeat() -> Dict[str, str]:
 @app.post("/api/heartbeat/leave")
 def heartbeat_leave() -> Dict[str, str]:
     # 收到分頁關閉信號（來自 pagehide / beforeunload 的 sendBeacon）
-    # 給予 4 秒緩衝（防止使用者只是按了 F5/⌘R 重新整理頁面）
-    _schedule_shutdown(delay=4.0)
+    with _busy_lock:
+        if _active_busy_tasks > 0:
+            logger.info("收到分頁離開信號，但目前有 %d 個後端任務進行中，延後自動關閉", _active_busy_tasks)
+            return {"status": "busy_deferred"}
+
+    # 給予 5 秒緩衝（防止使用者只是按了 F5/⌘R 重新整理頁面）
+    _schedule_shutdown(delay=5.0)
     return {"status": "scheduled_shutdown"}
 
 
 @app.post("/api/upload", response_model=ProjectMetadata)
 async def upload_video(file: UploadFile = File(...)) -> ProjectMetadata:
-    project_id = f"proj_{uuid.uuid4().hex[:10]}"
-    orig_name = file.filename or "video.mp4"
-    ext = Path(orig_name).suffix.lower() or ".mp4"
-    dest_path = UPLOADS_DIR / f"{project_id}{ext}"
+    with busy_task_scope(f"upload_{file.filename or 'video'}"):
+        project_id = f"proj_{uuid.uuid4().hex[:10]}"
+        orig_name = file.filename or "video.mp4"
+        ext = Path(orig_name).suffix.lower() or ".mp4"
+        dest_path = UPLOADS_DIR / f"{project_id}{ext}"
 
-    with dest_path.open("wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
+        with dest_path.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
 
-    meta_info = probe_video_metadata(str(dest_path))
-    project = ProjectMetadata(
-        project_id=project_id,
-        filename=orig_name,
-        video_url=f"/media/uploads/{dest_path.name}",
-        duration=meta_info["duration"],
-        width=meta_info["width"],
-        height=meta_info["height"],
-        fps=meta_info["fps"],
-        segments=[],
-    )
-    _save_project(project)
-    return project
+        meta_info = probe_video_metadata(str(dest_path))
+        project = ProjectMetadata(
+            project_id=project_id,
+            filename=orig_name,
+            video_url=f"/media/uploads/{dest_path.name}",
+            duration=meta_info["duration"],
+            width=meta_info["width"],
+            height=meta_info["height"],
+            fps=meta_info["fps"],
+            segments=[],
+        )
+        _save_project(project)
+        return project
 
 
 @app.post("/api/transcribe", response_model=ProjectMetadata)
 def transcribe_project(req: TranscribeRequest) -> ProjectMetadata:
-    project = _load_project(req.project_id)
-    video_path = _find_video_file(req.project_id)
+    with busy_task_scope(f"transcribe_{req.project_id}"):
+        project = _load_project(req.project_id)
+        video_path = _find_video_file(req.project_id)
 
-    segments, vad_intervals = transcribe_video_file(
-        video_path=str(video_path),
-        model_name=req.model_name,
-        custom_prompt=req.custom_prompt,
-        silence_threshold=req.silence_threshold,
-        total_duration=project.duration,
-        return_vad=True,
-    )
+        segments, vad_intervals = transcribe_video_file(
+            video_path=str(video_path),
+            model_name=req.model_name,
+            custom_prompt=req.custom_prompt,
+            silence_threshold=req.silence_threshold,
+            total_duration=project.duration,
+            return_vad=True,
+        )
 
-    import copy
-    project.model_name = req.model_name
-    project.custom_prompt = req.custom_prompt
-    project.silence_threshold = req.silence_threshold
-    project.segments = segments
-    project.initial_segments = copy.deepcopy(segments)
-    project.vad_intervals = vad_intervals
-    project.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    _save_project(project)
+        import copy
+        project.model_name = req.model_name
+        project.custom_prompt = req.custom_prompt
+        project.silence_threshold = req.silence_threshold
+        project.segments = segments
+        project.initial_segments = copy.deepcopy(segments)
+        project.vad_intervals = vad_intervals
+        project.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _save_project(project)
 
-    try:
-        _create_snapshot(project=project, trigger="initial", label="初始語音辨識基準")
-    except Exception as e:
-        logger.warning("建立初始快照失敗: %s", e)
+        try:
+            _create_snapshot(project=project, trigger="initial", label="初始語音辨識基準")
+        except Exception as e:
+            logger.warning("建立初始快照失敗: %s", e)
 
-    return project
+        return project
 
 
 @app.post("/api/rebuild-silence")
 def rebuild_silence(req: RebuildSilenceRequest):
-    vad_intervals = req.vad_intervals
-    if not vad_intervals and req.project_id:
-        try:
-            proj = _load_project(req.project_id)
-            vad_intervals = proj.vad_intervals
-        except Exception:
-            pass
+    with busy_task_scope(f"rebuild_silence_{req.project_id or 'adhoc'}"):
+        vad_intervals = req.vad_intervals
+        if not vad_intervals and req.project_id:
+            try:
+                proj = _load_project(req.project_id)
+                vad_intervals = proj.vad_intervals
+            except Exception:
+                pass
 
-    updated = rebuild_silence_for_segments(
-        segments=req.segments,
-        silence_threshold=req.silence_threshold,
-        total_duration=req.duration,
-        vad_intervals=vad_intervals,
-    )
-    return {"segments": updated}
+        updated = rebuild_silence_for_segments(
+            segments=req.segments,
+            silence_threshold=req.silence_threshold,
+            total_duration=req.duration,
+            vad_intervals=vad_intervals,
+        )
+        return {"segments": updated}
 
 
 @app.get("/api/projects/{project_id}", response_model=ProjectMetadata)
@@ -492,75 +533,76 @@ def delete_snapshot_endpoint(project_id: str, snapshot_id: str):
 
 @app.post("/api/export", response_model=ExportResponse)
 def export_project(req: ExportRequest) -> ExportResponse:
-    project = _load_project(req.project_id)
-    video_path = _find_video_file(req.project_id)
+    with busy_task_scope(f"export_{req.project_id}"):
+        project = _load_project(req.project_id)
+        video_path = _find_video_file(req.project_id)
 
-    export_id = f"exp_{uuid.uuid4().hex[:8]}"
-    stem = Path(project.filename).stem
-    safe_stem = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in stem) or "werv_cut"
+        export_id = f"exp_{uuid.uuid4().hex[:8]}"
+        stem = Path(project.filename).stem
+        safe_stem = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in stem) or "werv_cut"
 
-    mp4_name = f"{safe_stem}_{export_id}.mp4"
-    srt_name = f"{safe_stem}_{export_id}.srt"
-    zip_name = f"{safe_stem}_{export_id}_bundle.zip"
+        mp4_name = f"{safe_stem}_{export_id}.mp4"
+        srt_name = f"{safe_stem}_{export_id}.srt"
+        zip_name = f"{safe_stem}_{export_id}_bundle.zip"
 
-    mp4_path = EXPORTS_DIR / mp4_name
-    srt_path = EXPORTS_DIR / srt_name
-    zip_path = EXPORTS_DIR / zip_name
+        mp4_path = EXPORTS_DIR / mp4_name
+        srt_path = EXPORTS_DIR / srt_name
+        zip_path = EXPORTS_DIR / zip_name
 
-    logger.info(
-        "開始匯出影片: project_id=%s, input=%s, segments=%d, subtitle_enabled=%s, style=%s",
-        req.project_id,
-        video_path.name,
-        len(req.segments),
-        req.subtitle_style.enabled,
-        req.subtitle_style.style_mode,
-    )
-
-    # 1. 執行 FFmpeg 前先完整存檔並自動建立匯出前快照，確保即使匯出中斷也不會遺失任何換行或改字
-    project.segments = req.segments
-    project.subtitle_style = req.subtitle_style
-    project.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    _save_project(project)
-    try:
-        _create_snapshot(project=project, trigger="pre_export")
-    except Exception as e:
-        logger.warning("建立匯出前快照失敗 (不中斷匯出): %s", e)
-
-    try:
-        res = export_video_and_srt(
-            input_video_path=str(video_path),
-            output_mp4_path=str(mp4_path),
-            output_srt_path=str(srt_path),
-            output_zip_path=str(zip_path),
-            segments=req.segments,
-            padding=req.padding,
-            merge_gap=req.merge_gap,
-            fade_ms=req.fade_ms,
-            total_duration=project.duration,
-            subtitle_style=req.subtitle_style,
+        logger.info(
+            "開始匯出影片: project_id=%s, input=%s, segments=%d, subtitle_enabled=%s, style=%s",
+            req.project_id,
+            video_path.name,
+            len(req.segments),
+            req.subtitle_style.enabled,
+            req.subtitle_style.style_mode,
         )
-        logger.info("影片匯出成功: %s, 導出長度=%.2fs, 節省=%.2fs", mp4_name, res["exported_duration"], res["saved_seconds"])
-    except ValueError as e:
-        logger.warning("匯出參數錯誤: %s", e)
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        logger.exception("匯出處理發生例外錯誤: %s", e)
-        raise HTTPException(status_code=500, detail=str(e))
 
-    return ExportResponse(
-        export_id=export_id,
-        mp4_url=f"/media/exports/{mp4_name}",
-        download_url=f"/api/download/{mp4_name}",
-        filename=mp4_name,
-        srt_url=f"/media/exports/{srt_name}",
-        bundle_url=f"/media/exports/{zip_name}",
-        srt_content=res["srt_content"],
-        keep_ranges=res["keep_ranges"],
-        original_duration=res["original_duration"],
-        exported_duration=res["exported_duration"],
-        saved_seconds=res["saved_seconds"],
-        cut_count=res["cut_count"],
-    )
+        # 1. 執行 FFmpeg 前先完整存檔並自動建立匯出前快照，確保即使匯出中斷也不會遺失任何換行或改字
+        project.segments = req.segments
+        project.subtitle_style = req.subtitle_style
+        project.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        _save_project(project)
+        try:
+            _create_snapshot(project=project, trigger="pre_export")
+        except Exception as e:
+            logger.warning("建立匯出前快照失敗 (不中斷匯出): %s", e)
+
+        try:
+            res = export_video_and_srt(
+                input_video_path=str(video_path),
+                output_mp4_path=str(mp4_path),
+                output_srt_path=str(srt_path),
+                output_zip_path=str(zip_path),
+                segments=req.segments,
+                padding=req.padding,
+                merge_gap=req.merge_gap,
+                fade_ms=req.fade_ms,
+                total_duration=project.duration,
+                subtitle_style=req.subtitle_style,
+            )
+            logger.info("影片匯出成功: %s, 導出長度=%.2fs, 節省=%.2fs", mp4_name, res["exported_duration"], res["saved_seconds"])
+        except ValueError as e:
+            logger.warning("匯出參數錯誤: %s", e)
+            raise HTTPException(status_code=400, detail=str(e))
+        except Exception as e:
+            logger.exception("匯出處理發生例外錯誤: %s", e)
+            raise HTTPException(status_code=500, detail=str(e))
+
+        return ExportResponse(
+            export_id=export_id,
+            mp4_url=f"/media/exports/{mp4_name}",
+            download_url=f"/api/download/{mp4_name}",
+            filename=mp4_name,
+            srt_url=f"/media/exports/{srt_name}",
+            bundle_url=f"/media/exports/{zip_name}",
+            srt_content=res["srt_content"],
+            keep_ranges=res["keep_ranges"],
+            original_duration=res["original_duration"],
+            exported_duration=res["exported_duration"],
+            saved_seconds=res["saved_seconds"],
+            cut_count=res["cut_count"],
+        )
 
 
 @app.get("/api/download/{filename}")

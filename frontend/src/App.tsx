@@ -658,6 +658,7 @@ export default function App() {
 
     window.addEventListener('pagehide', handleLeave)
     window.addEventListener('beforeunload', handleLeave)
+    window.addEventListener('focus', sendHeartbeat)
     const handleVisibility = () => {
       if (!document.hidden) sendHeartbeat()
     }
@@ -667,6 +668,7 @@ export default function App() {
       clearInterval(interval)
       window.removeEventListener('pagehide', handleLeave)
       window.removeEventListener('beforeunload', handleLeave)
+      window.removeEventListener('focus', sendHeartbeat)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
   }, [])
@@ -2126,6 +2128,14 @@ export default function App() {
     window.addEventListener('mouseup', handleMouseUp)
   }
 
+  // Helper to format fetch errors cleanly
+  const formatFetchError = (err: any, defaultMsg: string): string => {
+    if (err?.name === 'TypeError' && String(err?.message || '').toLowerCase().includes('fetch')) {
+      return `${defaultMsg}：後端服務未回應（可能已退出或正在重啟，請確認終端機視窗）`
+    }
+    return err?.message || defaultMsg
+  }
+
   // Open Exported Video directly in macOS default player (QuickTime / IINA)
   const handleOpenInDefaultPlayer = async () => {
     if (!exportResult) return
@@ -2138,7 +2148,7 @@ export default function App() {
         throw new Error(err.detail || '無法開啟檔案')
       }
     } catch (err: any) {
-      alert(err.message || '無法開啟影片播放器')
+      alert(formatFetchError(err, '無法開啟影片播放器'))
     }
   }
 
@@ -2155,7 +2165,7 @@ export default function App() {
         throw new Error(err.detail || '無法在 Finder 中顯示')
       }
     } catch (err: any) {
-      alert(err.message || '無法在 Finder 中開啟檔案')
+      alert(formatFetchError(err, '無法在 Finder 中開啟檔案'))
     } finally {
       setIsRevealing(false)
     }
