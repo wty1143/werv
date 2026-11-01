@@ -25,7 +25,7 @@ from .asr_engine import (
     rebuild_silence_for_segments,
     transcribe_video_file,
 )
-from .exporter import export_video_and_srt
+from .exporter import export_audio_and_srt, export_video_and_srt
 from .models import (
     CreateSnapshotRequest,
     ExportRequest,
@@ -364,6 +364,7 @@ async def upload_video(file: UploadFile = File(...)) -> ProjectMetadata:
             width=meta_info["width"],
             height=meta_info["height"],
             fps=meta_info["fps"],
+            media_type=meta_info.get("media_type", "video"),
             segments=[],
         )
         _save_project(project)
@@ -537,28 +538,38 @@ def export_project(req: ExportRequest) -> ExportResponse:
         project = _load_project(req.project_id)
         video_path = _find_video_file(req.project_id)
 
+        # 決定導出格式與媒體類型 (auto: 音訊檔預設 mp3，影片檔預設 mp4)
+        fmt = req.export_format.lower()
+        if fmt == "auto":
+            is_audio_export = (project.media_type == "audio")
+            fmt = "mp3" if is_audio_export else "mp4"
+        else:
+            is_audio_export = (fmt in ("mp3", "m4a", "wav"))
+
         export_id = f"exp_{uuid.uuid4().hex[:8]}"
         stem = Path(project.filename).stem
         safe_stem = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in stem) or "werv_cut"
 
-        mp4_name = f"{safe_stem}_{export_id}.mp4"
+        out_name = f"{safe_stem}_{export_id}.{fmt}"
         srt_name = f"{safe_stem}_{export_id}.srt"
         zip_name = f"{safe_stem}_{export_id}_bundle.zip"
 
-        mp4_path = EXPORTS_DIR / mp4_name
+        out_path = EXPORTS_DIR / out_name
         srt_path = EXPORTS_DIR / srt_name
         zip_path = EXPORTS_DIR / zip_name
 
         logger.info(
-            "開始匯出影片: project_id=%s, input=%s, segments=%d, subtitle_enabled=%s, style=%s",
+            "開始匯出成品: project_id=%s, input=%s, media_type=%s, target_format=%s, segments=%d, subtitle_enabled=%s, enhance=%s",
             req.project_id,
             video_path.name,
+            project.media_type,
+            fmt,
             len(req.segments),
             req.subtitle_style.enabled,
-            req.subtitle_style.style_mode,
+            req.audio_enhance,
         )
 
-        # 1. 執行 FFmpeg 前先完整存檔並自動建立匯出前快照，確保即使匯出中斷也不會遺失任何換行或改字
+        # 1. 執行匯出前先完整存檔並自動建立匯出前快照，確保即使匯出中斷也不會遺失任何換行或改字
         project.segments = req.segments
         project.subtitle_style = req.subtitle_style
         project.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -569,19 +580,35 @@ def export_project(req: ExportRequest) -> ExportResponse:
             logger.warning("建立匯出前快照失敗 (不中斷匯出): %s", e)
 
         try:
-            res = export_video_and_srt(
-                input_video_path=str(video_path),
-                output_mp4_path=str(mp4_path),
-                output_srt_path=str(srt_path),
-                output_zip_path=str(zip_path),
-                segments=req.segments,
-                padding=req.padding,
-                merge_gap=req.merge_gap,
-                fade_ms=req.fade_ms,
-                total_duration=project.duration,
-                subtitle_style=req.subtitle_style,
-            )
-            logger.info("影片匯出成功: %s, 導出長度=%.2fs, 節省=%.2fs", mp4_name, res["exported_duration"], res["saved_seconds"])
+            if is_audio_export:
+                res = export_audio_and_srt(
+                    input_audio_path=str(video_path),
+                    output_audio_path=str(out_path),
+                    output_srt_path=str(srt_path),
+                    output_zip_path=str(zip_path),
+                    segments=req.segments,
+                    padding=req.padding,
+                    merge_gap=req.merge_gap,
+                    fade_ms=req.fade_ms,
+                    total_duration=project.duration,
+                    audio_enhance=req.audio_enhance,
+                    export_format=fmt,
+                )
+                logger.info("音訊匯出成功: %s, 導出長度=%.2fs, 節省=%.2fs", out_name, res["exported_duration"], res["saved_seconds"])
+            else:
+                res = export_video_and_srt(
+                    input_video_path=str(video_path),
+                    output_mp4_path=str(out_path),
+                    output_srt_path=str(srt_path),
+                    output_zip_path=str(zip_path),
+                    segments=req.segments,
+                    padding=req.padding,
+                    merge_gap=req.merge_gap,
+                    fade_ms=req.fade_ms,
+                    total_duration=project.duration,
+                    subtitle_style=req.subtitle_style,
+                )
+                logger.info("影片匯出成功: %s, 導出長度=%.2fs, 節省=%.2fs", out_name, res["exported_duration"], res["saved_seconds"])
         except ValueError as e:
             logger.warning("匯出參數錯誤: %s", e)
             raise HTTPException(status_code=400, detail=str(e))
@@ -589,19 +616,23 @@ def export_project(req: ExportRequest) -> ExportResponse:
             logger.exception("匯出處理發生例外錯誤: %s", e)
             raise HTTPException(status_code=500, detail=str(e))
 
+        media_url = f"/media/exports/{out_name}"
         return ExportResponse(
             export_id=export_id,
-            mp4_url=f"/media/exports/{mp4_name}",
-            download_url=f"/api/download/{mp4_name}",
-            filename=mp4_name,
+            mp4_url=media_url,
+            audio_url=media_url if is_audio_export else None,
+            download_url=f"/api/download/{out_name}",
+            filename=out_name,
             srt_url=f"/media/exports/{srt_name}",
             bundle_url=f"/media/exports/{zip_name}",
             srt_content=res["srt_content"],
+            transcript_text=res.get("transcript_text", ""),
             keep_ranges=res["keep_ranges"],
             original_duration=res["original_duration"],
             exported_duration=res["exported_duration"],
             saved_seconds=res["saved_seconds"],
             cut_count=res["cut_count"],
+            media_type="audio" if is_audio_export else "video",
         )
 
 

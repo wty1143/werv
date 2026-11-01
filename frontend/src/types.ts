@@ -33,6 +33,7 @@ export interface ProjectMetadata {
   width: number
   height: number
   fps: number
+  media_type?: 'video' | 'audio'
   model_name: WhisperModelName
   custom_prompt: string
   silence_threshold: number
@@ -70,16 +71,19 @@ export interface ProjectSnapshot {
 export interface ExportResponse {
   export_id: string
   mp4_url: string
+  audio_url?: string | null
   download_url: string
   filename: string
   srt_url: string
   bundle_url: string
   srt_content: string
+  transcript_text?: string
   keep_ranges: KeepRange[]
   original_duration: number
   exported_duration: number
   saved_seconds: number
   cut_count: number
+  media_type?: 'video' | 'audio'
 }
 
 export type SubtitleFontFamily = 'pingfang' | 'heiti' | 'songti' | 'hiragino'

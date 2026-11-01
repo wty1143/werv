@@ -24,6 +24,7 @@ import {
   History,
   Keyboard,
   Merge,
+  Mic,
   Palette,
   Pause,
   Play,
@@ -192,6 +193,9 @@ export default function App() {
     '就緒 · 支援 Apple Silicon MLX Whisper 與 VideoToolbox 硬體加速'
   )
   const [errorBanner, setErrorBanner] = useState<string | null>(null)
+  const [copiedTranscript, setCopiedTranscript] = useState<boolean>(false)
+  const [audioEnhance, setAudioEnhance] = useState<boolean>(true)
+  const [exportFormat, setExportFormat] = useState<'auto' | 'mp4' | 'mp3' | 'm4a' | 'wav'>('auto')
 
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -2060,13 +2064,16 @@ export default function App() {
     return { activeSeg, activeTokenId }
   }, [segments, currentTime])
 
-  // Module D: Export Video (VideoToolbox) + Burn-in Subtitles
+  // Module D: Export Video (VideoToolbox) + Burn-in Subtitles / Podcast Audio
   const handleExport = async () => {
     if (!project) return
     setErrorBanner(null)
     setIsExporting(true)
+    const isAudio = project.media_type === 'audio' || ['mp3', 'm4a', 'wav'].includes(exportFormat)
     setStatusMessage(
-      '正在透過 Apple VideoToolbox 硬體加速編碼 MP4 (含 15ms 音訊防爆音淡入淡出與字幕畫面燒錄)...'
+      isAudio
+        ? '正在執行 Podcast 廣播級音訊切除與 -16 LUFS 響度優化...'
+        : '正在透過 Apple VideoToolbox 硬體加速編碼 MP4 (含 15ms 音訊防爆音淡入淡出與字幕畫面燒錄)...'
     )
     try {
       const resp = await fetch('/api/export', {
@@ -2079,6 +2086,8 @@ export default function App() {
           merge_gap: mergeGapSec,
           fade_ms: 15.0,
           subtitle_style: subtitleStyle,
+          export_format: exportFormat,
+          audio_enhance: audioEnhance,
         }),
       })
       if (!resp.ok) {
@@ -2088,10 +2097,10 @@ export default function App() {
       const data: ExportResponse = await resp.json()
       setExportResult(data)
       setStatusMessage(
-        `匯出成功！原片長 ${data.original_duration.toFixed(1)}s ➔ 剪輯後 ${data.exported_duration.toFixed(1)}s（省下 ${data.saved_seconds.toFixed(1)}s）`
+        `匯出成功！原長度 ${data.original_duration.toFixed(1)}s ➔ 剪輯後 ${data.exported_duration.toFixed(1)}s（省下 ${data.saved_seconds.toFixed(1)}s）`
       )
     } catch (err: any) {
-      setErrorBanner(err.message || '匯出影片時發生錯誤')
+      setErrorBanner(err.message || '匯出成品時發生錯誤')
     } finally {
       setIsExporting(false)
     }
@@ -2201,7 +2210,7 @@ export default function App() {
       <input
         ref={fileInputRef}
         type="file"
-        accept="video/*,audio/*"
+        accept="video/*,audio/*,.mp3,.m4a,.wav,.aac,.flac,.ogg,.caf,.mp4,.mov,.m4v"
         className="hidden"
         onChange={(e) => {
           const f = e.target.files?.[0]
@@ -2238,7 +2247,7 @@ export default function App() {
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#1c2130] hover:bg-[#252c40] text-slate-200 text-xs font-medium border border-slate-700/80 transition shrink-0 whitespace-nowrap"
           >
             <FolderOpen className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-            <span>匯入影片</span>
+            <span>匯入媒體 (影片/音檔)</span>
           </button>
 
           <button
@@ -2253,12 +2262,18 @@ export default function App() {
 
           {project && (
             <div className="hidden lg:flex items-center gap-2 px-2.5 py-1 rounded-md bg-[#0c0e14] border border-slate-800/90 text-xs text-slate-400 shrink-0 whitespace-nowrap">
-              <Film className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              {project.media_type === 'audio' ? (
+                <Mic className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+              ) : (
+                <Film className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              )}
               <span className="text-slate-200 font-medium max-w-[200px] truncate" title={project.filename}>
                 {project.filename}
               </span>
               <span className="text-slate-500 font-mono text-[11px]">
-                {project.width}×{project.height} · {project.fps}fps
+                {project.media_type === 'audio'
+                  ? 'Podcast 音訊'
+                  : `${project.width}×${project.height} · ${project.fps}fps`}
               </span>
             </div>
           )}
@@ -2391,16 +2406,52 @@ export default function App() {
 
         {/* Right Export Actions */}
         <div className="flex items-center gap-2 shrink-0">
+          {/* Format Selector */}
+          <div className="flex items-center bg-[#0c0e14] border border-slate-800 rounded-lg p-0.5 text-xs text-slate-300">
+            <select
+              value={exportFormat}
+              onChange={(e) => setExportFormat(e.target.value as any)}
+              className="bg-transparent border-none text-[11px] font-medium text-slate-200 px-2 py-1 focus:outline-none cursor-pointer"
+              title="選擇導出格式"
+            >
+              <option value="auto">
+                {project?.media_type === 'audio' ? '自動 (MP3 Podcast 音檔)' : '自動 (MP4 影片)'}
+              </option>
+              <option value="mp3">MP3 音檔 (192kbps - Podcast 主流)</option>
+              <option value="m4a">M4A 音檔 (AAC 高音質)</option>
+              <option value="wav">WAV 音檔 (無損音質)</option>
+              <option value="mp4">MP4 影片 (含字型畫面燒錄)</option>
+            </select>
+          </div>
+
+          {/* Audio Enhance Checkbox Toggle */}
+          <label
+            className="hidden md:flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[#1c2130]/80 hover:bg-[#1c2130] border border-slate-700/60 text-slate-300 text-[11px] cursor-pointer"
+            title="自動套用 80Hz 低頻去雜音 + EBU R128 (-16 LUFS) 廣播級響度平衡，避免聲音忽大忽小"
+          >
+            <input
+              type="checkbox"
+              checked={audioEnhance}
+              onChange={(e) => setAudioEnhance(e.target.checked)}
+              className="rounded accent-emerald-400"
+            />
+            <span className="text-emerald-400 font-semibold">廣播級響度優化</span>
+          </label>
+
           <button
             onClick={handleExport}
             disabled={!project || segments.length === 0 || isExporting}
             className="flex items-center gap-2 px-4 py-1.5 rounded-lg bg-[#00d287] hover:bg-[#00bf7a] text-[#062419] font-bold text-xs shadow-md shadow-emerald-500/20 transition disabled:opacity-50 shrink-0 whitespace-nowrap"
-            title="以 Apple VideoToolbox 硬體加速導出並自動燒錄字幕"
+            title={
+              project?.media_type === 'audio' || ['mp3', 'm4a', 'wav'].includes(exportFormat)
+                ? '匯出 Podcast 音訊檔 (支援 -16 LUFS 響度優化)'
+                : '以 Apple VideoToolbox 硬體加速導出並自動燒錄字幕'
+            }
           >
             {isExporting ? (
               <>
                 <progress
-                  aria-label="正在匯出影片"
+                  aria-label="正在匯出"
                   className="loading-spinner"
                   style={
                     {
@@ -2410,12 +2461,20 @@ export default function App() {
                     } as React.CSSProperties
                   }
                 />
-                <span>正在硬體加速匯出...</span>
+                <span>正在匯出...</span>
               </>
             ) : (
               <>
-                <Zap className="w-3.5 h-3.5 fill-current shrink-0" />
-                <span>匯出成品影片 (含字幕)</span>
+                {project?.media_type === 'audio' || ['mp3', 'm4a', 'wav'].includes(exportFormat) ? (
+                  <Mic className="w-3.5 h-3.5 fill-current shrink-0" />
+                ) : (
+                  <Zap className="w-3.5 h-3.5 fill-current shrink-0" />
+                )}
+                <span>
+                  {project?.media_type === 'audio' || ['mp3', 'm4a', 'wav'].includes(exportFormat)
+                    ? '匯出 Podcast 音檔'
+                    : '匯出成品影片 (含字幕)'}
+                </span>
               </>
             )}
           </button>
@@ -2534,11 +2593,49 @@ export default function App() {
             className="relative flex-1 bg-black rounded-xl overflow-hidden border border-slate-800/90 flex items-center justify-center shadow-2xl group select-none"
           >
             {project ? (
-              <div className="relative max-h-full max-w-full flex items-center justify-center">
+              <div className="relative w-full h-full flex items-center justify-center">
+                {/* Audio Mode Studio Graphic Backdrop */}
+                {project.media_type === 'audio' && (
+                  <div
+                    onClick={togglePlayPause}
+                    className="absolute inset-0 bg-gradient-to-b from-[#141824] via-[#0c0e14] to-[#121622] flex flex-col items-center justify-center p-6 cursor-pointer select-none"
+                  >
+                    <div className="w-16 h-16 rounded-2xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400 mb-4 shadow-lg shadow-cyan-500/10">
+                      <Mic className="w-8 h-8" />
+                    </div>
+                    <div className="text-sm font-bold text-slate-200 mb-1 max-w-[80%] truncate text-center">
+                      {project.filename}
+                    </div>
+                    <div className="text-[11px] text-slate-400 mb-5 font-mono">
+                      Podcast 模式 · 點擊空白鍵播放跳剪
+                    </div>
+
+                    {/* Animated audio bars simulation when playing */}
+                    <div className="flex items-end gap-1.5 h-8">
+                      {[40, 75, 55, 90, 60, 100, 70, 85, 45, 95, 65, 80, 50].map((h, i) => (
+                        <div
+                          key={i}
+                          style={{
+                            height: isPlaying ? `${h}%` : '20%',
+                            transition: 'height 150ms ease-in-out',
+                          }}
+                          className={`w-1 rounded-full ${
+                            isPlaying
+                              ? 'bg-gradient-to-t from-cyan-500 to-emerald-400 animate-pulse'
+                              : 'bg-slate-700'
+                          }`}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <video
                   ref={videoRef}
                   src={project.video_url}
-                  className="max-h-full max-w-full object-contain cursor-pointer block"
+                  className={`max-h-full max-w-full object-contain cursor-pointer block ${
+                    project.media_type === 'audio' ? 'opacity-0 pointer-events-none absolute' : ''
+                  }`}
                   onClick={togglePlayPause}
                   onPlay={() => setIsPlaying(true)}
                   onPause={() => setIsPlaying(false)}
@@ -3789,17 +3886,27 @@ export default function App() {
             <div className="flex items-center justify-between border-b border-slate-800 pb-4">
               <div className="flex items-center gap-3">
                 <div className="w-10 h-10 rounded-xl bg-emerald-500/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400">
-                  <Film className="w-5 h-5" />
+                  {exportResult.media_type === 'audio' ? (
+                    <Mic className="w-5 h-5" />
+                  ) : (
+                    <Film className="w-5 h-5" />
+                  )}
                 </div>
                 <div>
                   <h3 className="text-base font-bold text-white flex items-center gap-2">
-                    <span>🎬 成品影片匯出完成！</span>
+                    <span>
+                      {exportResult.media_type === 'audio'
+                        ? '🎙️ Podcast 成品音訊匯出完成！'
+                        : '🎬 成品影片匯出完成！'}
+                    </span>
                     <span className="text-xs px-2 py-0.5 rounded-full bg-cyan-500/20 text-cyan-300 border border-cyan-500/30 font-normal">
-                      已內嵌硬字幕
+                      {exportResult.media_type === 'audio' ? 'Podcast 規格' : '已內嵌硬字幕'}
                     </span>
                   </h3>
                   <p className="text-xs text-slate-400">
-                    已完成 Apple VideoToolbox 硬體編碼、15ms 音訊防爆音處理與字幕畫面燒錄
+                    {exportResult.media_type === 'audio'
+                      ? '已完成無縫跳剪拼接、15ms 防爆音處理與廣播級響度標準化'
+                      : '已完成 Apple VideoToolbox 硬體編碼、15ms 音訊防爆音處理與字幕畫面燒錄'}
                   </p>
                 </div>
               </div>
@@ -3815,13 +3922,17 @@ export default function App() {
             {/* Export Summary Cards */}
             <div className="grid grid-cols-4 gap-3">
               <div className="bg-[#0c0e14] p-3 rounded-xl border border-slate-800">
-                <div className="text-[11px] text-slate-400">原始影片長度</div>
+                <div className="text-[11px] text-slate-400">
+                  {exportResult.media_type === 'audio' ? '原始音訊長度' : '原始影片長度'}
+                </div>
                 <div className="text-lg font-mono font-bold text-slate-200">
                   {exportResult.original_duration.toFixed(2)}s
                 </div>
               </div>
               <div className="bg-[#0c0e14] p-3 rounded-xl border border-slate-800">
-                <div className="text-[11px] text-slate-400">粗剪後影片長度</div>
+                <div className="text-[11px] text-slate-400">
+                  {exportResult.media_type === 'audio' ? '剪輯後長度' : '粗剪後影片長度'}
+                </div>
                 <div className="text-lg font-mono font-bold text-cyan-400">
                   {exportResult.exported_duration.toFixed(2)}s
                 </div>
@@ -3840,19 +3951,60 @@ export default function App() {
               </div>
             </div>
 
-            {/* Preview Exported Video */}
+            {/* Preview Exported Media */}
             <div className="bg-[#0c0e14] rounded-xl border border-slate-800 p-3 flex flex-col">
               <span className="text-xs font-semibold text-slate-300 mb-2 flex items-center justify-between">
-                <span>🎬 成品播放預覽（字幕位置與樣式已完全嵌入影片中）</span>
+                <span>
+                  {exportResult.media_type === 'audio'
+                    ? '🎵 成品音訊試聽'
+                    : '🎬 成品播放預覽（字幕位置與樣式已完全嵌入影片中）'}
+                </span>
                 <span className="text-[11px] font-mono text-slate-400">{exportResult.filename}</span>
               </span>
-              <video
-                src={exportResult.mp4_url}
-                controls
-                autoPlay={false}
-                className="w-full max-h-72 object-contain bg-black rounded-lg"
-              />
+              {exportResult.media_type === 'audio' ? (
+                <div className="p-4 bg-[#141822] rounded-lg flex flex-col items-center justify-center gap-3">
+                  <div className="flex items-center gap-2 text-xs text-cyan-300">
+                    <Mic className="w-4 h-4" />
+                    <span>廣播標準 Podcast 音訊檔案（各大平台已相容）</span>
+                  </div>
+                  <audio
+                    src={exportResult.audio_url || exportResult.mp4_url}
+                    controls
+                    className="w-full max-w-xl"
+                  />
+                </div>
+              ) : (
+                <video
+                  src={exportResult.mp4_url}
+                  controls
+                  autoPlay={false}
+                  className="w-full max-h-72 object-contain bg-black rounded-lg"
+                />
+              )}
             </div>
+
+            {/* Shownotes Transcript Copy */}
+            {exportResult.transcript_text && (
+              <div className="bg-[#0c0e14] rounded-xl border border-slate-800 p-3 flex items-center justify-between">
+                <div className="flex items-center gap-2 text-xs text-slate-300">
+                  <FileText className="w-4 h-4 text-cyan-400 shrink-0" />
+                  <span>Shownotes 逐字稿：包含剪輯後對齊的時間軸章節標記</span>
+                </div>
+                <button
+                  onClick={() => {
+                    if (exportResult.transcript_text) {
+                      navigator.clipboard.writeText(exportResult.transcript_text)
+                      setCopiedTranscript(true)
+                      setTimeout(() => setCopiedTranscript(false), 2000)
+                    }
+                  }}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 border border-cyan-500/40 text-xs font-medium transition"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>{copiedTranscript ? '已複製到剪貼簿！' : '一鍵複製 Shownotes 逐字稿'}</span>
+                </button>
+              </div>
+            )}
 
             {/* Action Buttons */}
             <div className="flex items-center justify-between pt-3 border-t border-slate-800">
@@ -3868,7 +4020,7 @@ export default function App() {
                 <button
                   onClick={handleOpenInDefaultPlayer}
                   className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition"
-                  title="以 macOS 預設播放器 (QuickTime / IINA) 開啟"
+                  title="以 macOS 預設播放器 (QuickTime / Music / IINA) 開啟"
                 >
                   <Play className="w-3.5 h-3.5 text-cyan-400 fill-current" />
                   <span>以播放器開啟</span>

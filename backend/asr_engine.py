@@ -36,7 +36,7 @@ def get_vad_model():
 
 
 def probe_video_metadata(video_path: str) -> Dict[str, Any]:
-    """Use ffprobe to extract duration, width, height, and fps."""
+    """Use ffprobe to extract media_type, duration, width, height, and fps."""
     cmd = [
         FFPROBE_BIN,
         "-v",
@@ -53,9 +53,16 @@ def probe_video_metadata(video_path: str) -> Dict[str, Any]:
     width = 1920
     height = 1080
     fps = 30.0
+    media_type = "audio"
 
     for stream in data.get("streams", []):
         if stream.get("codec_type") == "video":
+            # Check if this is an attached picture (e.g. MP3/M4A album art cover)
+            disposition = stream.get("disposition", {})
+            if disposition.get("attached_pic") == 1:
+                continue
+
+            media_type = "video"
             raw_w = int(stream.get("width", width))
             raw_h = int(stream.get("height", height))
 
@@ -95,11 +102,22 @@ def probe_video_metadata(video_path: str) -> Dict[str, Any]:
                 duration = float(stream["duration"])
             break
 
+    # Fallback to audio stream duration if format.duration is 0 (some m4a / ogg files)
+    if duration <= 0:
+        for stream in data.get("streams", []):
+            if stream.get("codec_type") == "audio" and stream.get("duration"):
+                try:
+                    duration = float(stream["duration"])
+                    break
+                except (ValueError, TypeError):
+                    pass
+
     return {
         "duration": round(duration, 3),
         "width": width,
         "height": height,
         "fps": fps,
+        "media_type": media_type,
     }
 
 

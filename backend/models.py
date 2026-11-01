@@ -42,6 +42,7 @@ class ProjectMetadata(BaseModel):
     width: int = 1920
     height: int = 1080
     fps: float = 30.0
+    media_type: Literal["video", "audio"] = "video"
     model_name: str = "mlx-community/whisper-large-v3-turbo"
     custom_prompt: str = ""
     silence_threshold: float = 0.4
@@ -115,6 +116,8 @@ class ExportRequest(BaseModel):
     merge_gap: float = 0.08
     fade_ms: float = 15.0
     subtitle_style: SubtitleStyle = Field(default_factory=SubtitleStyle)
+    export_format: Literal["auto", "mp4", "mp3", "m4a", "wav"] = "auto"
+    audio_enhance: bool = True
 
 
 class ExportResponse(BaseModel):
@@ -130,3 +133,6 @@ class ExportResponse(BaseModel):
     exported_duration: float
     saved_seconds: float
     cut_count: int
+    media_type: Literal["video", "audio"] = "video"
+    audio_url: Optional[str] = None
+    transcript_text: str = ""

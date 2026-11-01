@@ -151,6 +151,38 @@ def join_tokens_text(tokens: List[Token]) -> str:
     return "".join(parts)
 
 
+def generate_clean_transcript_text(segments: List[Segment], keep_ranges: List[KeepRange]) -> str:
+    """
+    Generate clean Shownotes text format with remapped timestamps, e.g.:
+    00:00 歡迎收聽本期節目
+    00:15 今天我們要聊聊...
+    """
+    if not keep_ranges:
+        return ""
+
+    lines: List[str] = []
+    for seg in segments:
+        kept_words = [t for t in seg.tokens if not t.deleted and t.type == "word" and t.text.strip()]
+        if not kept_words:
+            continue
+        if seg.caption is not None:
+            line_text = seg.caption.strip()
+        else:
+            line_text = join_tokens_text(kept_words)
+        if not line_text:
+            continue
+
+        orig_start = kept_words[0].start
+        new_start = remap_timestamp(orig_start, keep_ranges)
+        total_sec = int(round(new_start))
+        mm = total_sec // 60
+        ss = total_sec % 60
+        time_tag = f"{mm:02d}:{ss:02d}"
+        lines.append(f"{time_tag} {line_text}")
+
+    return "\n".join(lines)
+
+
 def generate_remapped_srt(segments: List[Segment], keep_ranges: List[KeepRange]) -> str:
     """
     Module D SRT Timestamp Remapping:
@@ -461,6 +493,166 @@ def render_subtitle_overlay_track(
     return concat_file
 
 
+def build_audio_only_filter_complex(
+    keep_ranges: List[KeepRange],
+    fade_sec: float = 0.015,
+    audio_enhance: bool = True,
+) -> str:
+    """
+    Build FFmpeg filter_complex graph for audio-only export using `atrim` for each range,
+    with 15ms audio fade-in/fade-out at cut points to prevent Audio Pop,
+    and optional podcast-grade audio enhancement (highpass 80Hz + EBU R128 -16 LUFS loudnorm).
+    """
+    lines: List[str] = []
+    concat_inputs: List[str] = []
+    n = len(keep_ranges)
+
+    for i, r in enumerate(keep_ranges):
+        s = f"{r.start:.4f}"
+        e = f"{r.end:.4f}"
+        dur = max(0.02, r.end - r.start)
+
+        afade_parts: List[str] = []
+        if dur > fade_sec * 2.5:
+            fade_out_st = max(0.0, dur - fade_sec)
+            afade_parts.append(f"afade=t=in:st=0:d={fade_sec:.4f}")
+            afade_parts.append(f"afade=t=out:st={fade_out_st:.4f}:d={fade_sec:.4f}")
+
+        afade_chain = ("," + ",".join(afade_parts)) if afade_parts else ""
+        lines.append(f"[0:a]atrim=start={s}:end={e},asetpts=PTS-STARTPTS{afade_chain}[a{i}];")
+        concat_inputs.append(f"[a{i}]")
+
+    concat_str = "".join(concat_inputs) + f"concat=n={n}:v=0:a=1[cuta]"
+    if audio_enhance:
+        lines.append(concat_str + ";")
+        # Apply 80Hz high-pass to remove low-frequency desk rumble / AC hum, and normalize to -16 LUFS (Podcast Standard)
+        lines.append("[cuta]highpass=f=80,loudnorm=I=-16:TP=-1.5:LRA=11[outa]")
+    else:
+        lines.append(concat_str.replace("[cuta]", "[outa]"))
+
+    return "\n".join(lines)
+
+
+def export_audio_and_srt(
+    input_audio_path: str,
+    output_audio_path: str,
+    output_srt_path: str,
+    output_zip_path: str,
+    segments: List[Segment],
+    padding: float = 0.05,
+    merge_gap: float = 0.08,
+    fade_ms: float = 15.0,
+    total_duration: Optional[float] = None,
+    audio_enhance: bool = True,
+    export_format: str = "mp3",
+) -> dict:
+    """
+    Export pure podcast audio (MP3 192k / M4A AAC / WAV) with timestamp remapping and optional -16 LUFS enhancement.
+    """
+    keep_ranges = compute_keep_ranges(
+        segments=segments,
+        padding=padding,
+        merge_gap=merge_gap,
+        total_duration=total_duration,
+    )
+    if not keep_ranges:
+        raise ValueError("無法匯出：所有片段皆已被刪除，請至少保留一個字元或片段。")
+
+    meta = probe_video_metadata(input_audio_path)
+    exported_duration = round(sum(r.end - r.start for r in keep_ranges), 3)
+    orig_dur = round(total_duration or meta.get("duration", 0.0) or keep_ranges[-1].end, 3)
+
+    fade_sec = max(0.005, fade_ms / 1000.0)
+    filter_graph = build_audio_only_filter_complex(
+        keep_ranges=keep_ranges,
+        fade_sec=fade_sec,
+        audio_enhance=audio_enhance,
+    )
+
+    with tempfile.NamedTemporaryFile("w", suffix=".filter", delete=False, encoding="utf-8") as f_script:
+        f_script.write(filter_graph)
+        script_path = f_script.name
+
+    def _build_cmd(filter_flag: str, filter_val: str) -> List[str]:
+        cmd = [
+            FFMPEG_BIN,
+            "-y",
+            "-i",
+            input_audio_path,
+            filter_flag,
+            filter_val,
+            "-map",
+            "[outa]",
+        ]
+        fmt = export_format.lower()
+        if fmt == "mp3":
+            cmd.extend(["-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100"])
+        elif fmt == "m4a":
+            cmd.extend(["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"])
+        elif fmt == "wav":
+            cmd.extend(["-c:a", "pcm_s16le", "-ar", "44100"])
+        else:
+            cmd.extend(["-c:a", "libmp3lame", "-b:a", "192k", "-ar", "44100"])
+        cmd.append(output_audio_path)
+        return cmd
+
+    try:
+        proc = None
+        first_err = ""
+        if len(keep_ranges) > 50:
+            cmd = _build_cmd("-/filter_complex", script_path)
+            logger.debug("執行 FFmpeg Audio -/filter_complex: %s", " ".join(cmd))
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+
+            if proc.returncode != 0 and (
+                "Unrecognized option '-/filter_complex'" in proc.stderr
+                or "Unrecognized option '/filter_complex'" in proc.stderr
+                or "Option '-/filter_complex' not found" in proc.stderr
+            ):
+                first_err = proc.stderr
+                cmd = _build_cmd("-filter_complex_script", script_path)
+                proc = subprocess.run(cmd, capture_output=True, text=True)
+        else:
+            cmd = _build_cmd("-filter_complex", filter_graph)
+            logger.debug("執行 FFmpeg Audio -filter_complex: %s", " ".join(cmd))
+            proc = subprocess.run(cmd, capture_output=True, text=True)
+
+        if proc is None or proc.returncode != 0:
+            err_output = proc.stderr if proc else "無法取得 FFmpeg 執行程序"
+            if first_err and "Unrecognized option" in err_output:
+                err_output = f"{first_err}\n\n[Fallback Retry Output]:\n{err_output}"
+            cmd_str = " ".join(cmd) if cmd else ""
+            logger.error("FFmpeg Audio 匯出失敗 (exit code: %s)!\n執行指令: %s\n完整 Stderr 輸出:\n%s",
+                         getattr(proc, "returncode", "N/A"), cmd_str, err_output)
+            raise RuntimeError(f"FFmpeg Audio 匯出失敗 (exit code {getattr(proc, 'returncode', 'N/A')}): {err_output[-1000:]}")
+        else:
+            logger.info("Podcast 音訊匯出成功！")
+    finally:
+        if os.path.exists(script_path):
+            os.remove(script_path)
+
+    # Generate UTF-8 SRT backup & Shownotes transcript
+    srt_content = generate_remapped_srt(segments, keep_ranges)
+    transcript_text = generate_clean_transcript_text(segments, keep_ranges)
+    Path(output_srt_path).write_text(srt_content, encoding="utf-8")
+
+    # Optional ZIP bundle creation
+    if output_zip_path:
+        with zipfile.ZipFile(output_zip_path, "w", compression=zipfile.ZIP_STORED) as zf:
+            zf.write(output_audio_path, arcname=Path(output_audio_path).name)
+            zf.write(output_srt_path, arcname=Path(output_srt_path).name)
+
+    return {
+        "keep_ranges": keep_ranges,
+        "srt_content": srt_content,
+        "transcript_text": transcript_text,
+        "original_duration": orig_dur,
+        "exported_duration": exported_duration,
+        "saved_seconds": round(max(0.0, orig_dur - exported_duration), 3),
+        "cut_count": max(0, len(keep_ranges) - 1),
+    }
+
+
 def build_filter_complex(
     keep_ranges: List[KeepRange],
     fade_sec: float = 0.015,
@@ -641,8 +833,9 @@ def export_video_and_srt(
         if sub_tmpdir_obj is not None:
             sub_tmpdir_obj.cleanup()
 
-    # Generate UTF-8 SRT backup
+    # Generate UTF-8 SRT backup & Shownotes transcript
     srt_content = generate_remapped_srt(segments, keep_ranges)
+    transcript_text = generate_clean_transcript_text(segments, keep_ranges)
     Path(output_srt_path).write_text(srt_content, encoding="utf-8")
 
     # Optional ZIP bundle creation
@@ -654,6 +847,7 @@ def export_video_and_srt(
     return {
         "keep_ranges": keep_ranges,
         "srt_content": srt_content,
+        "transcript_text": transcript_text,
         "original_duration": orig_dur,
         "exported_duration": exported_duration,
         "saved_seconds": round(max(0.0, orig_dur - exported_duration), 3),
